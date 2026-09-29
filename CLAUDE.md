@@ -7,6 +7,7 @@ Modular multi-broker portfolio risk and stress-testing engine (Python 3.11+).
 - `src/portfolio_risk/data/` — price providers behind the `PriceProvider` ABC:
   `SyntheticProvider` (seeded GBM, offline, used in tests) and `StooqProvider` (public CSV, network).
 - `src/portfolio_risk/risk/` — covariance/correlation, parametric + historical VaR/CVaR (`var.py`), `analyze_risk` report with diversification benefit (`report.py`). VaR/CVaR are positive loss amounts; cash adds value but no risk.
+- `src/portfolio_risk/risk/monte_carlo.py` + `linalg.py` — Cholesky/nearest-PSD, correlated GBM paths (buy-and-hold), MC VaR/CVaR, drawdown and ruin metrics.
 - `src/portfolio_risk/cli.py` — Typer CLI (`pre`, or `python -m portfolio_risk`).
 - `tests/` — pytest; **must never touch the network** (inject fakes into `StooqProvider`).
 

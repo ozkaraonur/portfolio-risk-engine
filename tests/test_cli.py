@@ -41,3 +41,19 @@ def test_risk_command() -> None:
 def test_risk_rejects_bad_confidence() -> None:
     result = runner.invoke(app, ["risk", str(EXAMPLE), "--confidence", "0.2"])
     assert result.exit_code != 0
+
+
+def test_simulate_command() -> None:
+    result = runner.invoke(app, ["simulate", str(EXAMPLE), "-n", "500", "-t", "60", "--seed", "1"])
+    assert result.exit_code == 0, result.output
+    for token in ("500 paths", "VaR", "CVaR", "median", "Maximum drawdown", "ruin"):
+        assert token in result.output
+
+
+def test_simulate_is_deterministic() -> None:
+    args = ["simulate", str(EXAMPLE), "-n", "200", "-t", "30", "--seed", "9"]
+    assert runner.invoke(app, args).output == runner.invoke(app, args).output
+
+
+def test_simulate_rejects_too_few_simulations() -> None:
+    assert runner.invoke(app, ["simulate", str(EXAMPLE), "-n", "1"]).exit_code != 0

@@ -18,7 +18,7 @@ from portfolio_risk.data import (
     SyntheticProvider,
 )
 from portfolio_risk.models import Portfolio
-from portfolio_risk.risk import Method, analyze_risk, correlation_matrix
+from portfolio_risk.risk import Method, analyze_risk, correlation_matrix, run_monte_carlo
 
 app = typer.Typer(
     help="Multi-broker portfolio risk and stress-testing engine.", no_args_is_help=True
@@ -121,6 +121,75 @@ def risk(
     corr = correlation_matrix(prices[portfolio.symbols].pct_change().dropna())
     typer.echo("\nCorrelation:")
     typer.echo(corr.round(2).to_string())
+
+
+@app.command()
+def simulate(
+    portfolio_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    simulations: Annotated[
+        int, typer.Option("--simulations", "-n", min=10, help="Number of Monte Carlo paths.")
+    ] = 1000,
+    days: Annotated[
+        int, typer.Option("--days", "-t", min=1, help="Simulation horizon in trading days.")
+    ] = 252,
+    seed: Annotated[int, typer.Option(help="Seed for simulation and synthetic prices.")] = 42,
+    loss_threshold: Annotated[
+        float, typer.Option(min=0.01, max=1.0, help="Loss fraction defining ruin, e.g. 0.3.")
+    ] = 0.3,
+    drift: Annotated[bool, typer.Option(help="Use historical mean returns as drift.")] = False,
+    provider: Annotated[ProviderName, typer.Option(help="Price source.")] = ProviderName.SYNTHETIC,
+    history_days: Annotated[
+        int, typer.Option(min=60, help="Calendar days of history used to estimate risk.")
+    ] = 730,
+) -> None:
+    """Monte Carlo value paths: VaR/CVaR, terminal percentiles, drawdowns, ruin probability."""
+    try:
+        portfolio = load_portfolio(portfolio_file)
+        end = date.today()
+        prices = make_provider(provider, seed).get_prices(
+            portfolio.assets, end - timedelta(days=history_days), end
+        )
+        result = run_monte_carlo(
+            portfolio,
+            prices,
+            n_simulations=simulations,
+            days=days,
+            seed=seed,
+            loss_threshold=loss_threshold,
+            use_drift=drift,
+        )
+    except (ValidationError, DataUnavailableError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    v0 = result.initial_value
+    typer.echo(
+        f"{portfolio.name}: {result.n_simulations:,} paths x {result.days} days, "
+        f"start value {v0:,.2f} {portfolio.base_currency}"
+    )
+    typer.echo("\nLoss over horizon:")
+    typer.echo(f"{'CONFIDENCE':<12}{'VaR':>14}{'VaR %':>8}{'CVaR':>14}{'CVaR %':>8}")
+    for c, var in result.var.items():
+        cvar = result.cvar[c]
+        typer.echo(f"{c:<12.1%}{var:>14,.2f}{var / v0:>8.2%}{cvar:>14,.2f}{cvar / v0:>8.2%}")
+    typer.echo("\nTerminal portfolio value:")
+    rows = [
+        ("5th pct", result.final_percentile(5)),
+        ("median", result.median_final),
+        ("mean", result.mean_final),
+        ("95th pct", result.final_percentile(95)),
+    ]
+    for label, value in rows:
+        typer.echo(f"{label:<12}{value:>14,.2f}{value / v0 - 1:>+9.1%}")
+    typer.echo("\nMaximum drawdown:")
+    for pct in (50, 95, 99):
+        typer.echo(f"p{pct:<11}{result.drawdown_percentile(pct):>14.1%}")
+    for level in (0.1, 0.2, 0.3, 0.5):
+        typer.echo(f"P(MDD >= {level:.0%}){result.prob_drawdown_exceeds(level):>10.1%}")
+    typer.echo(
+        f"\nP(loss >= {result.loss_threshold:.0%}): at end {result.prob_loss_at_end:.2%}, "
+        f"at any time (ruin) {result.prob_ruin:.2%}"
+    )
 
 
 if __name__ == "__main__":
