@@ -27,3 +27,17 @@ def test_summary_invalid_file(tmp_path: Path) -> None:
     bad.write_text('{"positions": [{"quantity": -1}]}')
     result = runner.invoke(app, ["summary", str(bad)])
     assert result.exit_code == 1
+
+
+def test_risk_command() -> None:
+    result = runner.invoke(
+        app, ["risk", str(EXAMPLE), "--confidence", "0.99", "--horizon", "10", "--seed", "1"]
+    )
+    assert result.exit_code == 0, result.output
+    for token in ("parametric", "historical", "CVaR", "Correlation", "AAPL", "BTC", "99.0%"):
+        assert token in result.output
+
+
+def test_risk_rejects_bad_confidence() -> None:
+    result = runner.invoke(app, ["risk", str(EXAMPLE), "--confidence", "0.2"])
+    assert result.exit_code != 0
