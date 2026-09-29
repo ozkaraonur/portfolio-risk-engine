@@ -17,8 +17,21 @@ from portfolio_risk.data import (
     StooqProvider,
     SyntheticProvider,
 )
-from portfolio_risk.models import Portfolio
-from portfolio_risk.risk import Method, analyze_risk, correlation_matrix, run_monte_carlo
+from portfolio_risk.models import Asset, AssetClass, Portfolio
+from portfolio_risk.risk import (
+    BUILTIN_SCENARIOS,
+    Method,
+    Scenario,
+    analyze_risk,
+    beta_scenario,
+    compute_betas,
+    correlation_matrix,
+    get_scenario,
+    parse_custom_shocks,
+    portfolio_beta,
+    run_monte_carlo,
+    run_stress,
+)
 
 app = typer.Typer(
     help="Multi-broker portfolio risk and stress-testing engine.", no_args_is_help=True
@@ -190,6 +203,96 @@ def simulate(
         f"\nP(loss >= {result.loss_threshold:.0%}): at end {result.prob_loss_at_end:.2%}, "
         f"at any time (ruin) {result.prob_ruin:.2%}"
     )
+
+
+@app.command()
+def stress(
+    portfolio_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    scenario: Annotated[
+        str | None,
+        typer.Option(help=f"Scenario name or 'all' ({', '.join(BUILTIN_SCENARIOS)})."),
+    ] = None,
+    custom: Annotated[
+        str | None,
+        typer.Option(help='E.g. "equity=-0.15,crypto=-0.30,AAPL=-0.5,tag:tech=-0.4".'),
+    ] = None,
+    market_shock: Annotated[
+        float | None,
+        typer.Option(help="Market move (e.g. -0.10); assets move by their beta vs the benchmark."),
+    ] = None,
+    benchmark: Annotated[str, typer.Option(help="Market index symbol for betas.")] = "SPY",
+    loss_threshold: Annotated[
+        float, typer.Option(min=0.01, max=1.0, help="Flag scenarios losing at least this fraction.")
+    ] = 0.3,
+    seed: Annotated[int, typer.Option(help="Seed for the synthetic provider.")] = 42,
+    provider: Annotated[ProviderName, typer.Option(help="Price source.")] = ProviderName.SYNTHETIC,
+    history_days: Annotated[
+        int, typer.Option(min=60, help="Calendar days of history used for betas.")
+    ] = 730,
+) -> None:
+    """Stress test: historical, custom and beta-driven market shock scenarios."""
+    try:
+        portfolio = load_portfolio(portfolio_file)
+        scenarios: list[Scenario] = []
+        if scenario is not None and scenario.lower() != "all":
+            scenarios.append(get_scenario(scenario))
+        elif scenario is not None or (custom is None and market_shock is None):
+            scenarios.extend(BUILTIN_SCENARIOS.values())
+        if custom is not None:
+            scenarios.append(parse_custom_shocks(custom))
+
+        assets = portfolio.assets
+        if market_shock is not None and benchmark.upper() not in portfolio.symbols:
+            assets = [*assets, Asset(symbol=benchmark, asset_class=AssetClass.EQUITY)]
+        end = date.today()
+        prices = make_provider(provider, seed).get_prices(
+            assets, end - timedelta(days=history_days), end
+        )
+        latest = {str(k): float(v) for k, v in prices.iloc[-1].items()}
+        beta_line = ""
+        if market_shock is not None:
+            rets = prices.pct_change().dropna()
+            betas = compute_betas(rets[portfolio.symbols], rets[benchmark.upper()])
+            scenarios.append(beta_scenario(market_shock, betas, benchmark.upper()))
+            pbeta = portfolio_beta(
+                portfolio.market_values(latest), betas, portfolio.total_value(latest)
+            )
+            beta_line = (
+                "Betas vs "
+                + f"{benchmark.upper()}: "
+                + ", ".join(f"{s}={b:.2f}" for s, b in betas.items())
+                + f" | portfolio beta {pbeta:.2f}"
+            )
+        report = run_stress(portfolio, latest, scenarios)
+    except (ValidationError, DataUnavailableError, ValueError, KeyError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    value = report.results[0].portfolio_value
+    typer.echo(f"{portfolio.name}: value {value:,.2f} {portfolio.base_currency}")
+    if beta_line:
+        typer.echo(beta_line)
+    typer.echo(f"\n{'SCENARIO':<18}{'P&L':>14}{'LOSS %':>9}{'STRESSED VALUE':>17}")
+    for r in report.results:
+        typer.echo(
+            f"{r.scenario.name:<18}{r.total_pnl:>14,.2f}{r.pnl_pct:>9.1%}{r.stressed_value:>17,.2f}"
+        )
+    for r in report.results:
+        typer.echo(f"\n{r.scenario.name} - {r.scenario.description}")
+        typer.echo(f"{'SYMBOL':<10}{'VALUE':>14}{'SHOCK':>9}{'P&L':>14}")
+        for i in r.impacts:
+            typer.echo(f"{i.symbol:<10}{i.value:>14,.2f}{i.shock:>9.1%}{i.pnl:>14,.2f}")
+        if r.cash > 0:
+            typer.echo(f"{'CASH':<10}{r.cash:>14,.2f}{0.0:>9.1%}{0.0:>14,.2f}")
+    worst = report.worst_case
+    typer.echo(
+        f"\nWorst case: {worst.scenario.name} loses {-worst.total_pnl:,.2f} "
+        f"({-worst.pnl_pct:.1%}); remaining capital {worst.stressed_value:,.2f}"
+    )
+    breaches = report.breaches(loss_threshold)
+    if breaches:
+        names = ", ".join(b.scenario.name for b in breaches)
+        typer.echo(f"WARNING: loss >= {loss_threshold:.0%} in: {names}")
 
 
 if __name__ == "__main__":

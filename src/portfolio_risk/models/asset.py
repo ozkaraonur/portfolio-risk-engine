@@ -26,8 +26,17 @@ class Asset(BaseModel):
         default=None,
         description="Ticker used by external price sources, if different from ``symbol``.",
     )
+    tags: tuple[str, ...] = Field(
+        default=(),
+        description="Free-form labels (e.g. 'tech', 'growth') that stress scenarios can target.",
+    )
 
     @field_validator("symbol", "currency")
     @classmethod
     def _upper(cls, value: str) -> str:
         return value.strip().upper()
+
+    @field_validator("tags")
+    @classmethod
+    def _lower_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(t.strip().lower() for t in value if t.strip()))
