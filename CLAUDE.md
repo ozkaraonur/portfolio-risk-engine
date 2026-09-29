@@ -1,0 +1,25 @@
+# Portfolio Risk Engine
+
+Modular multi-broker portfolio risk and stress-testing engine (Python 3.11+).
+
+## Layout
+- `src/portfolio_risk/models/` — pydantic v2 domain models (`Asset`, `Position`, `CashBalance`, `Portfolio`).
+- `src/portfolio_risk/data/` — price providers behind the `PriceProvider` ABC:
+  `SyntheticProvider` (seeded GBM, offline, used in tests) and `StooqProvider` (public CSV, network).
+- `src/portfolio_risk/cli.py` — Typer CLI (`pre`, or `python -m portfolio_risk`).
+- `tests/` — pytest; **must never touch the network** (inject fakes into `StooqProvider`).
+
+## Commands
+Use the project venv (`.venv`); install with `pip install -r requirements.txt && pip install -e .`.
+- Tests: `pytest`
+- Lint/format: `ruff check .` and `ruff format .`
+- Types: `mypy --strict` (config in `pyproject.toml`; must be clean)
+
+## Conventions
+- Full type annotations; mypy strict must pass. No `Any` unless unavoidable and commented.
+- Domain models are immutable (`frozen=True`) with `extra="forbid"`; validate at the boundary.
+- Providers return a `pd.DataFrame` of prices: DatetimeIndex (ascending), one column per asset symbol.
+- Simulations take an explicit `seed`; same inputs → same output. Never use global RNG state.
+- Log with `loguru`; no `print` in library code (CLI output goes through `typer.echo`).
+- Keep modules small and single-purpose; add a test with every new behavior.
+- Commit only when ruff, mypy and pytest are all green.
