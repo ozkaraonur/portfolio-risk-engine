@@ -28,3 +28,6 @@ data_cache/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Generated reports
+output/

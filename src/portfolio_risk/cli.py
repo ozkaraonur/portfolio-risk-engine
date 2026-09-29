@@ -9,6 +9,7 @@ from typing import Annotated
 
 import typer
 from pydantic import ValidationError
+from rich.console import Console
 
 from portfolio_risk import __version__
 from portfolio_risk.data import (
@@ -18,6 +19,7 @@ from portfolio_risk.data import (
     SyntheticProvider,
 )
 from portfolio_risk.models import Asset, AssetClass, Portfolio
+from portfolio_risk.reporting import build_analysis, render_dashboard, render_html, render_markdown
 from portfolio_risk.risk import (
     BUILTIN_SCENARIOS,
     Method,
@@ -293,6 +295,53 @@ def stress(
     if breaches:
         names = ", ".join(b.scenario.name for b in breaches)
         typer.echo(f"WARNING: loss >= {loss_threshold:.0%} in: {names}")
+
+
+@app.command()
+def report(
+    portfolio_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    html: Annotated[Path | None, typer.Option(help="Write a self-contained HTML report.")] = None,
+    markdown: Annotated[Path | None, typer.Option(help="Write a Markdown summary.")] = None,
+    simulations: Annotated[
+        int, typer.Option("--simulations", "-n", min=100, help="Monte Carlo paths.")
+    ] = 10_000,
+    mc_days: Annotated[int, typer.Option(min=1, help="Monte Carlo horizon in trading days.")] = 252,
+    loss_threshold: Annotated[
+        float, typer.Option(min=0.01, max=1.0, help="Loss fraction defining ruin.")
+    ] = 0.3,
+    seed: Annotated[int, typer.Option(help="Seed for simulation and synthetic prices.")] = 42,
+    provider: Annotated[ProviderName, typer.Option(help="Price source.")] = ProviderName.SYNTHETIC,
+    history_days: Annotated[
+        int, typer.Option(min=60, help="Calendar days of history used to estimate risk.")
+    ] = 730,
+    quiet: Annotated[bool, typer.Option(help="Skip the terminal dashboard.")] = False,
+) -> None:
+    """Run the full analysis: terminal dashboard plus optional HTML / Markdown reports."""
+    try:
+        portfolio = load_portfolio(portfolio_file)
+        end = date.today()
+        prices = make_provider(provider, seed).get_prices(
+            portfolio.assets, end - timedelta(days=history_days), end
+        )
+        analysis = build_analysis(
+            portfolio,
+            prices,
+            simulations=simulations,
+            mc_days=mc_days,
+            seed=seed,
+            loss_threshold=loss_threshold,
+        )
+    except (ValidationError, DataUnavailableError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not quiet:
+        render_dashboard(analysis, Console())
+    for path, content in ((html, render_html), (markdown, render_markdown)):
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content(analysis), encoding="utf-8")
+            typer.echo(f"Wrote {path}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,13 @@
+services:
+  portfolio-risk:
+    build: .
+    image: portfolio-risk
+    command:
+      - report
+      - examples/portfolio.json
+      - --html
+      - output/risk-report.html
+      - --markdown
+      - output/risk-report.md
+    volumes:
+      - ./output:/app/output
