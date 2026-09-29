@@ -25,6 +25,7 @@ and cash across brokers and answers the questions a risk committee asks:
 | Risk metrics | Parametric and historical-simulation VaR / CVaR at 95% / 99%, 1-day / 10-day horizons |
 | Monte Carlo | Cholesky-correlated multivariate GBM, terminal percentiles, drawdown distribution, first-passage ruin probability |
 | Stress testing | Built-in historical shocks, custom class / tag / symbol shocks, beta-driven market shocks |
+| Web panel | Streamlit UI: portfolio builder, one-click analysis, HTML report download |
 | Reporting | Rich terminal dashboard, zero-dependency HTML report (inline CSS/SVG), Markdown summary |
 | Data | Offline seeded GBM provider (tests, demos) and Stooq public-data provider (no API key) |
 | Engineering | Pydantic v2 models, `mypy --strict`, ruff, 90+ deterministic tests, Docker, CI on 3.11 / 3.12 |
@@ -61,7 +62,8 @@ src/portfolio_risk/
   data/        PriceProvider ABC, SyntheticProvider (GBM), StooqProvider
   risk/        covariance, var, linalg, monte_carlo, scenarios, stress, report
   reporting/   analysis (orchestration), terminal, html, markdown
-  cli.py       Typer CLI: summary | risk | simulate | stress | report
+  web/         Streamlit panel (app.py) and UI-independent table -> Portfolio builder
+  cli.py       Typer CLI: summary | risk | simulate | stress | report | web
 ```
 
 ## Quick start
@@ -101,12 +103,31 @@ No internet is needed: the default provider generates reproducible synthetic pri
 | `pre simulate <file> -n 10000 -t 252 --seed 42` | Monte Carlo VaR / CVaR, percentiles, drawdowns, ruin probability |
 | `pre stress <file> [--scenario gfc-2008] [--custom "equity=-0.15,crypto=-0.30"] [--market-shock -0.10]` | Scenario P&L per asset, worst case |
 | `pre report <file> --html report.html --markdown report.md` | Everything at once: dashboard plus reports |
+| `pre web` | Launch the Streamlit web panel |
 
 ```bash
 pre stress examples/portfolio.json --custom "equity=-0.15,tag:tech=-0.30,BTC=-0.5"
 pre stress examples/portfolio.json --market-shock -0.10 --benchmark SPY --provider stooq
 python examples/run_demo.py          # offline end-to-end demo -> ./output
 ```
+
+### Web panel (Streamlit)
+
+Build a portfolio in the browser (no JSON editing), run the analysis with one click and download the
+HTML report:
+
+```bash
+pre web                       # opens http://localhost:8501
+pre web --port 9000 --no-browser
+docker run --rm -p 8501:8501 portfolio-risk web --host 0.0.0.0 --no-browser
+```
+
+The sidebar holds the cash balances, analysis parameters (confidence 95% / 99%, horizon 1 / 10 days,
+1,000 / 5,000 simulations, synthetic or Stooq prices) and the **Load Sample Portfolio** button. Positions
+(broker, symbol, asset class, quantity, tags) are edited in a table where rows can be added and
+removed. The results view shows the executive summary cards, VaR / CVaR, the correlation heat map,
+Monte Carlo percentiles and the stress summary, with **HTML Raporu İndir** (`risk-report.html`),
+a Markdown download and a live preview of the full report. The panel binds to `localhost` by default.
 
 ### Docker
 

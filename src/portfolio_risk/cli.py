@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import date, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -342,6 +344,32 @@ def report(
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content(analysis), encoding="utf-8")
             typer.echo(f"Wrote {path}")
+
+
+@app.command()
+def web(
+    port: Annotated[int, typer.Option(help="Port to serve the panel on.")] = 8501,
+    host: Annotated[str, typer.Option(help="Bind address (0.0.0.0 in containers).")] = "localhost",
+    browser: Annotated[bool, typer.Option(help="Open the browser automatically.")] = True,
+) -> None:
+    """Launch the Streamlit web panel."""
+    script = Path(__file__).parent / "web" / "app.py"
+    command = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(script),
+        "--server.port",
+        str(port),
+        "--server.headless",
+        "false" if browser else "true",
+        "--browser.gatherUsageStats",
+        "false",
+        "--server.address",
+        host,
+    ]
+    raise typer.Exit(code=subprocess.call(command))
 
 
 if __name__ == "__main__":
