@@ -4,8 +4,8 @@
   "positions": [
     {"asset": {"symbol": "AAPL", "asset_class": "equity", "tags": ["tech"]}, "quantity": 50, "broker": "ibkr"},
     {"asset": {"symbol": "AAPL", "asset_class": "equity", "tags": ["tech"]}, "quantity": 20, "broker": "schwab"},
-    {"asset": {"symbol": "BTC", "asset_class": "crypto"}, "quantity": 25, "broker": "binance"},
-    {"asset": {"symbol": "GC", "asset_class": "commodity", "name": "Gold", "data_symbol": "gc.f"}, "quantity": 10, "broker": "ibkr"}
+    {"asset": {"symbol": "BTC", "asset_class": "crypto"}, "quantity": 0.2, "broker": "binance"},
+    {"asset": {"symbol": "GOLD", "asset_class": "commodity", "name": "Gold", "data_symbol": "gc.f"}, "quantity": 3, "broker": "ibkr"}
   ],
   "cash": [
     {"broker": "ibkr", "amount": 5000},

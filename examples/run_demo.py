@@ -11,6 +11,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from portfolio_risk.catalog import synthetic_profiles
 from portfolio_risk.data import SyntheticProvider
 from portfolio_risk.models import Portfolio
 from portfolio_risk.reporting import build_analysis, render_dashboard, render_html, render_markdown
@@ -24,7 +25,9 @@ def main(output_dir: Path) -> None:
     portfolio = Portfolio.model_validate_json(
         (ROOT / "examples" / "portfolio.json").read_text(encoding="utf-8")
     )
-    prices = SyntheticProvider(seed=SEED).get_prices(portfolio.assets, START, END)
+    prices = SyntheticProvider(seed=SEED, profiles=synthetic_profiles()).get_prices(
+        portfolio.assets, START, END
+    )
     analysis = build_analysis(portfolio, prices, seed=SEED)
 
     render_dashboard(analysis, Console())

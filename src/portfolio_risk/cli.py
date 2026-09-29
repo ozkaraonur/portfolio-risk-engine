@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from portfolio_risk import __version__
+from portfolio_risk.catalog import synthetic_profiles
 from portfolio_risk.data import (
     DataUnavailableError,
     PriceProvider,
@@ -54,7 +55,7 @@ def load_portfolio(path: Path) -> Portfolio:
 def make_provider(name: ProviderName, seed: int) -> PriceProvider:
     if name is ProviderName.STOOQ:
         return StooqProvider()
-    return SyntheticProvider(seed=seed)
+    return SyntheticProvider(seed=seed, profiles=synthetic_profiles())
 
 
 @app.command()

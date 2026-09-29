@@ -88,7 +88,7 @@ No internet is needed: the default provider generates reproducible synthetic pri
   "positions": [
     {"asset": {"symbol": "AAPL", "asset_class": "equity", "tags": ["tech"]}, "quantity": 50, "broker": "ibkr"},
     {"asset": {"symbol": "AAPL", "asset_class": "equity", "tags": ["tech"]}, "quantity": 20, "broker": "schwab"},
-    {"asset": {"symbol": "BTC", "asset_class": "crypto"}, "quantity": 25, "broker": "binance"}
+    {"asset": {"symbol": "BTC", "asset_class": "crypto"}, "quantity": 0.2, "broker": "binance"}
   ],
   "cash": [{"broker": "ibkr", "amount": 5000}]
 }
@@ -122,12 +122,18 @@ pre web --port 9000 --no-browser
 docker run --rm -p 8501:8501 portfolio-risk web --host 0.0.0.0 --no-browser
 ```
 
-The sidebar holds the cash balances, analysis parameters (confidence 95% / 99%, horizon 1 / 10 days,
-1,000 / 5,000 simulations, synthetic or Stooq prices) and the **Load Sample Portfolio** button. Positions
-(broker, symbol, asset class, quantity, tags) are edited in a table where rows can be added and
-removed. The results view shows the executive summary cards, VaR / CVaR, the correlation heat map,
-Monte Carlo percentiles and the stress summary, with **HTML Raporu İndir** (`risk-report.html`),
-a Markdown download and a live preview of the full report. The panel binds to `localhost` by default.
+Add positions by picking a **category** (ABD Hisseleri, BIST, Kripto, Emtia), then an **asset by name**
+(e.g. `THYAO - Türk Hava Yolları`, `SOL - Solana`) and entering only the quantity. Symbol, asset class,
+tags (`tech`, `aviation`, `crypto`, ...) and broker are linked automatically from the built-in
+[asset catalog](src/portfolio_risk/catalog.py) (35+ US stocks and ETFs, 35+ BIST stocks, 13 crypto assets,
+7 commodities). The sidebar holds the cash balances, the analysis parameters (confidence 95% / 99%,
+horizon 1 / 10 days, 1,000 / 5,000 simulations) and **Load Sample Portfolio**. The results view shows
+the executive summary cards, VaR / CVaR, the correlation heat map, Monte Carlo percentiles and the
+stress summary, with **HTML Raporu İndir** (`risk-report.html`), a Markdown download and a live
+preview of the full report. Prices in the panel always come from the offline synthetic engine,
+calibrated per catalog asset (volatility, drift, start price and a market/group factor structure that
+yields realistic cross-asset correlations, e.g. BTC-ETH ≈ 0.75, gold-silver ≈ 0.75, S&P stocks ≈ 0.55).
+The panel binds to `localhost` by default.
 
 ### Docker
 
@@ -145,64 +151,64 @@ Terminal dashboard (`python examples/run_demo.py`: synthetic data, fixed window,
 
 ```text
 +--------------------------- Risk Dashboard: demo ----------------------------+
-| Value  13,504.94 USD   Cash  44.4%   Top risk  AAPL   10d 99% VaR  761.94   |
+| Value  31,402.92 USD   Cash  19.1%   Top risk  AAPL   10d 99% VaR  1,900.79 |
 +------------------- as of 2025-12-31 | 782 obs | seed 42 --------------------+
 Allocation
-+---------------------------------------------------------+
-| Symbol |     Class |    Value | Weight | Standalone VaR |
-|--------+-----------+----------+--------+----------------|
-| AAPL   |    equity | 6,043.33 |  44.7% |         612.28 |
-| BTC    |    crypto |   766.58 |   5.7% |         262.90 |
-| GC     | commodity |   695.03 |   5.1% |          65.02 |
-| CASH   |      cash | 6,000.00 |  44.4% |              - |
-+---------------------------------------------------------+
++----------------------------------------------------------+
+| Symbol |     Class |     Value | Weight | Standalone VaR |
+|--------+-----------+-----------+--------+----------------|
+| AAPL   |    equity | 12,051.17 |  38.4% |       1,545.20 |
+| BTC    |    crypto |  1,707.13 |   5.4% |         467.72 |
+| GOLD   | commodity | 11,644.62 |  37.1% |         789.71 |
+| CASH   |      cash |  6,000.00 |  19.1% |              - |
++----------------------------------------------------------+
 Correlation
 +---------------------------+
-|      | AAPL |  BTC |   GC |
+|      | AAPL |  BTC | GOLD |
 |------+------+------+------|
-| AAPL | 1.00 | 0.31 | 0.28 |
-| BTC  | 0.31 | 1.00 | 0.27 |
-| GC   | 0.28 | 0.27 | 1.00 |
+| AAPL | 1.00 | 0.16 | 0.05 |
+| BTC  | 0.16 | 1.00 | 0.04 |
+| GOLD | 0.05 | 0.04 | 1.00 |
 +---------------------------+
 VaR / CVaR
-+---------------------------------------------------------------+
-| Method     | Horizon | Conf. |    VaR |   CVaR | Div. benefit |
-|------------+---------+-------+--------+--------+--------------|
-| parametric |      1d |   95% | 170.36 | 213.64 |        19.0% |
-| parametric |      1d |   99% | 240.95 | 276.04 |        19.0% |
-| parametric |     10d |   95% | 538.73 | 675.59 |        19.0% |
-| parametric |     10d |   99% | 761.94 | 872.93 |        19.0% |
-| historical |      1d |   95% | 173.27 | 209.81 |        19.1% |
-| historical |      1d |   99% | 235.98 | 264.30 |        18.9% |
-| historical |     10d |   95% | 546.17 | 674.80 |        16.5% |
-| historical |     10d |   99% | 782.31 | 878.50 |        16.2% |
-+---------------------------------------------------------------+
++-------------------------------------------------------------------+
+| Method     | Horizon | Conf. |      VaR |     CVaR | Div. benefit |
+|------------+---------+-------+----------+----------+--------------|
+| parametric |      1d |   95% |   425.00 |   532.97 |        32.2% |
+| parametric |      1d |   99% |   601.08 |   688.64 |        32.2% |
+| parametric |     10d |   95% | 1,343.96 | 1,685.38 |        32.2% |
+| parametric |     10d |   99% | 1,900.79 | 2,177.67 |        32.2% |
+| historical |      1d |   95% |   412.18 |   509.23 |        34.1% |
+| historical |      1d |   99% |   565.72 |   654.41 |        32.3% |
+| historical |     10d |   95% | 1,215.23 | 1,438.04 |        37.4% |
+| historical |     10d |   99% | 1,567.66 | 1,750.89 |        39.5% |
++-------------------------------------------------------------------+
 Monte Carlo (10,000 x 252d)
 +------------------------------------+
 | Metric        |     Value | Change |
 |---------------+-----------+--------|
-| 5th pct       | 11,154.82 | -17.4% |
-| Median        | 13,323.30 |  -1.3% |
-| 95th pct      | 16,518.99 | +22.3% |
-| VaR 95%       |  2,350.12 | -17.4% |
-| CVaR 95%      |  2,761.50 | -20.4% |
-| VaR 99%       |  3,002.64 | -22.2% |
-| CVaR 99%      |  3,298.31 | -24.4% |
-| P(MDD >= 10%) |     74.5% |        |
-| P(MDD >= 20%) |     10.2% |        |
-| P(MDD >= 30%) |      0.1% |        |
-| P(ruin, -30%) |     0.01% |        |
+| 5th pct       | 25,411.20 | -19.1% |
+| Median        | 31,036.87 |  -1.2% |
+| 95th pct      | 38,931.85 | +24.0% |
+| VaR 95%       |  5,991.72 | -19.1% |
+| CVaR 95%      |  7,185.71 | -22.9% |
+| VaR 99%       |  7,928.62 | -25.2% |
+| CVaR 99%      |  8,768.12 | -27.9% |
+| P(MDD >= 10%) |     78.7% |        |
+| P(MDD >= 20%) |     15.3% |        |
+| P(MDD >= 30%) |      0.6% |        |
+| P(ruin, -30%) |     0.31% |        |
 +------------------------------------+
 Stress tests
 +------------------------------------------------------+
 | Scenario       |       P&L | Loss % | Stressed value |
 |----------------+-----------+--------+----------------|
-| gfc-2008       | -3,075.20 | -22.8% |      10,429.75 |
-| covid-2020     | -2,370.05 | -17.5% |      11,134.90 |
-| inflation-2022 | -2,439.69 | -18.1% |      11,065.26 |
+| gfc-2008       | -4,700.61 | -15.0% |      26,702.31 |
+| covid-2020     | -7,380.07 | -23.5% |      24,022.85 |
+| inflation-2022 | -2,416.39 |  -7.7% |      28,986.53 |
 +------------------------------------------------------+
 +-------------------------------- Worst case ---------------------------------+
-| gfc-2008 loses 3,075.20 USD (22.8%); remaining capital 10,429.75 USD        |
+| covid-2020 loses 7,380.07 USD (23.5%); remaining capital 24,022.85 USD      |
 +-----------------------------------------------------------------------------+
 ```
 

@@ -8,34 +8,33 @@ import pandas as pd
 import streamlit as st
 from pydantic import ValidationError
 
-from portfolio_risk.data import (
-    DataUnavailableError,
-    PriceProvider,
-    StooqProvider,
-    SyntheticProvider,
-)
+from portfolio_risk.catalog import CATEGORIES, entries_for, synthetic_profiles
+from portfolio_risk.data import SyntheticProvider
 from portfolio_risk.reporting import RiskAnalysis, build_analysis, render_html, render_markdown
 from portfolio_risk.risk import Method
 from portfolio_risk.web.builder import (
-    ASSET_CLASSES,
     COL_AMOUNT,
     COL_BROKER,
+    COL_CATEGORY,
     COL_CLASS,
+    COL_DELETE,
+    COL_NAME,
     COL_QTY,
     COL_SYMBOL,
     COL_TAGS,
     PortfolioInputError,
+    add_position,
     broker_options,
     empty_cash,
     empty_positions,
     frames_to_portfolio,
     load_sample_portfolio,
     portfolio_to_frames,
+    remove_marked,
 )
 
 SEED = 42
 HISTORY_DAYS = 730
-PROVIDERS = {"Sentetik (çevrimdışı)": "synthetic", "Stooq (gerçek veri)": "stooq"}
 
 
 def _init_state() -> None:
@@ -44,19 +43,19 @@ def _init_state() -> None:
     st.session_state.setdefault("editor_version", 0)
 
 
+def _reset_editors() -> None:
+    st.session_state["editor_version"] += 1  # forces the editors to re-initialise
+
+
 def _load_sample() -> None:
     try:
         positions, cash = portfolio_to_frames(load_sample_portfolio())
-    except (FileNotFoundError, ValidationError) as exc:
+    except (FileNotFoundError, ValidationError, PortfolioInputError) as exc:
         st.session_state["sample_error"] = str(exc)
         return
     st.session_state.update(positions=positions, cash=cash)
-    st.session_state["editor_version"] += 1  # forces the editors to re-initialise
     st.session_state.pop("sample_error", None)
-
-
-def _make_provider(name: str) -> PriceProvider:
-    return StooqProvider() if name == "stooq" else SyntheticProvider(seed=SEED)
+    _reset_editors()
 
 
 def _heat(value: object) -> str:
@@ -65,17 +64,16 @@ def _heat(value: object) -> str:
     return f"background-color: rgba({rgb},{min(abs(number), 1.0) * 0.5:.2f})"
 
 
-def _run_analysis(
-    positions: pd.DataFrame, cash: pd.DataFrame, provider: str, simulations: int
-) -> None:
+def _run_analysis(positions: pd.DataFrame, cash: pd.DataFrame, simulations: int) -> None:
+    """Prices always come from the synthetic engine (catalog-calibrated, offline)."""
     try:
         portfolio = frames_to_portfolio(positions, cash)
         end = date.today()
-        prices = _make_provider(provider).get_prices(
+        prices = SyntheticProvider(seed=SEED, profiles=synthetic_profiles()).get_prices(
             portfolio.assets, end - timedelta(days=HISTORY_DAYS), end
         )
         analysis = build_analysis(portfolio, prices, simulations=simulations, seed=SEED)
-    except (PortfolioInputError, ValidationError, DataUnavailableError, ValueError) as exc:
+    except (PortfolioInputError, ValidationError, ValueError) as exc:
         st.session_state.pop("analysis", None)
         st.error(f"Analiz yapılamadı: {exc}")
         return
@@ -194,7 +192,10 @@ def main() -> None:
         if "sample_error" in st.session_state:
             st.error(st.session_state["sample_error"])
         confidence = st.radio(
-            "Güven Aralığı", [0.95, 0.99], format_func=lambda c: f"%{c * 100:.0f}", horizontal=True
+            "Güven Aralığı",
+            [0.95, 0.99],
+            format_func=lambda c: f"%{c * 100:.0f}",
+            horizontal=True,
         )
         horizon = st.radio("Zaman Ufku", [1, 10], format_func=lambda h: f"{h} gün", horizontal=True)
         simulations = st.radio(
@@ -203,7 +204,6 @@ def main() -> None:
             format_func=lambda n: f"{n:,}",
             horizontal=True,
         )
-        provider_label = st.selectbox("Fiyat Verisi", list(PROVIDERS))
         st.markdown("**Nakit Bakiyesi**")
         cash = st.data_editor(
             st.session_state["cash"],
@@ -212,48 +212,73 @@ def main() -> None:
             hide_index=True,
             column_config={
                 COL_BROKER: st.column_config.SelectboxColumn(
-                    COL_BROKER,
-                    options=broker_options(st.session_state["positions"], st.session_state["cash"]),
+                    COL_BROKER, options=broker_options(st.session_state["cash"])
                 ),
                 COL_AMOUNT: st.column_config.NumberColumn(COL_AMOUNT, min_value=0.0, format="%.2f"),
             },
         )
         run = st.button("Risk Analizi Yap & Rapor Oluştur", key="run_analysis", type="primary")
+        st.caption(
+            "Fiyatlar, seçilen varlıklara göre kalibre edilmiş sentetik (GBM) motorla üretilir."
+        )
 
     st.title("Portfolio Risk Engine")
-    st.caption(
-        "Portföyünüzü oluşturun, tek tıkla risk analizini çalıştırın ve HTML raporunu indirin."
+    st.caption("Varlıkları listeden seçin, miktarı girin, tek tıkla risk analizini çalıştırın.")
+
+    st.markdown("**Varlık Ekle**")
+    c_cat, c_asset, c_qty, c_add = st.columns([2, 4, 2, 1], vertical_alignment="bottom")
+    category = c_cat.selectbox("Borsa / Kategori", CATEGORIES, key="add_category")
+    entries = entries_for(category)
+    entry = c_asset.selectbox(
+        "Varlık",
+        entries,
+        format_func=lambda e: e.label,
+        key=f"add_asset_{category}",
     )
-    st.markdown("**Pozisyonlar** (satır eklemek için tablonun altındaki + simgesini kullanın)")
+    quantity = c_qty.number_input(
+        "Miktar / Adet", min_value=0.0, value=1.0, step=1.0, format="%g", key="add_qty"
+    )
+    add_clicked = c_add.button("Ekle", key="add_position", type="primary")
+    if entry is not None:
+        st.caption(
+            f"Sınıf: **{entry.asset_class.value}** | Etiketler: {', '.join(entry.tags)} | "
+            f"Broker: {entry.broker}"
+        )
+
+    st.markdown("**Pozisyonlar**")
     positions = st.data_editor(
         st.session_state["positions"],
         key=f"positions_editor_{version}",
-        num_rows="dynamic",
+        num_rows="fixed",
         hide_index=True,
         use_container_width=True,
+        disabled=[COL_CATEGORY, COL_SYMBOL, COL_NAME, COL_CLASS, COL_TAGS],
         column_config={
-            COL_BROKER: st.column_config.SelectboxColumn(
-                COL_BROKER,
-                options=broker_options(st.session_state["positions"], st.session_state["cash"]),
-                default="Custom",
-            ),
-            COL_SYMBOL: st.column_config.TextColumn(COL_SYMBOL, help="Örn. AAPL, BTC, GC"),
-            COL_CLASS: st.column_config.SelectboxColumn(
-                COL_CLASS, options=ASSET_CLASSES, default="equity"
-            ),
+            COL_DELETE: st.column_config.CheckboxColumn(COL_DELETE, default=False),
             COL_QTY: st.column_config.NumberColumn(COL_QTY, min_value=0.0, format="%.6g"),
-            COL_TAGS: st.column_config.TextColumn(
-                COL_TAGS, help="Virgülle ayırın, örn. tech, growth"
-            ),
         },
     )
+    delete_clicked = st.button("Seçilenleri Sil", key="delete_positions")
+
+    if add_clicked and entry is not None:
+        try:
+            st.session_state["positions"] = add_position(positions, entry, float(quantity))
+        except PortfolioInputError as exc:
+            st.error(str(exc))
+        else:
+            _reset_editors()
+            st.rerun()
+    if delete_clicked:
+        st.session_state["positions"] = remove_marked(positions)
+        _reset_editors()
+        st.rerun()
 
     if run:
-        _run_analysis(positions, cash, PROVIDERS[provider_label], simulations)
+        _run_analysis(positions, cash, simulations)
 
     analysis = st.session_state.get("analysis")
     if analysis is None:
-        st.info("Pozisyonları girin (veya örnek portföyü yükleyin), sonra analizi başlatın.")
+        st.info("Pozisyon ekleyin (veya örnek portföyü yükleyin), sonra analizi başlatın.")
         return
     _show_results(analysis, confidence, horizon)
 

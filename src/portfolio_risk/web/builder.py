@@ -1,4 +1,4 @@
-"""UI-independent helpers: convert editable tables to/from a ``Portfolio``."""
+"""UI-independent helpers: catalog-driven position/cash tables <-> ``Portfolio``."""
 
 from __future__ import annotations
 
@@ -8,18 +8,21 @@ from pathlib import Path
 import pandas as pd
 from pydantic import ValidationError
 
-from portfolio_risk.models import Asset, AssetClass, CashBalance, Portfolio, Position
+from portfolio_risk.catalog import CatalogEntry, get_entry
+from portfolio_risk.models import CashBalance, Portfolio, Position
 
 BROKERS = ["InteractiveBrokers", "Binance", "BIST", "Custom"]
-ASSET_CLASSES = [c.value for c in AssetClass]
 
-COL_BROKER = "Broker"
+COL_DELETE = "Sil"
+COL_CATEGORY = "Kategori"
 COL_SYMBOL = "Sembol"
-COL_CLASS = "Varlık Sınıfı"
-COL_QTY = "Miktar / Lot"
+COL_NAME = "Varlık"
+COL_CLASS = "Sınıf"
 COL_TAGS = "Etiketler"
+COL_QTY = "Miktar / Adet"
+COL_BROKER = "Broker"
 COL_AMOUNT = "Tutar (USD)"
-POSITION_COLUMNS = [COL_BROKER, COL_SYMBOL, COL_CLASS, COL_QTY, COL_TAGS]
+POSITION_COLUMNS = [COL_DELETE, COL_CATEGORY, COL_SYMBOL, COL_NAME, COL_CLASS, COL_TAGS, COL_QTY]
 CASH_COLUMNS = [COL_BROKER, COL_AMOUNT]
 
 # Sample-portfolio lookup: repository checkout first, then the working directory.
@@ -36,11 +39,13 @@ class PortfolioInputError(ValueError):
 def empty_positions() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            COL_BROKER: pd.Series(dtype="object"),
+            COL_DELETE: pd.Series(dtype="bool"),
+            COL_CATEGORY: pd.Series(dtype="object"),
             COL_SYMBOL: pd.Series(dtype="object"),
+            COL_NAME: pd.Series(dtype="object"),
             COL_CLASS: pd.Series(dtype="object"),
-            COL_QTY: pd.Series(dtype="float64"),
             COL_TAGS: pd.Series(dtype="object"),
+            COL_QTY: pd.Series(dtype="float64"),
         }
     )
 
@@ -63,43 +68,60 @@ def _to_float(value: object) -> float:
     return float(str(value))
 
 
-def parse_tags(raw: object) -> tuple[str, ...]:
-    """``"tech, growth"`` -> ``("tech", "growth")``."""
-    if _blank(raw):
-        return ()
-    return tuple(t.strip() for t in str(raw).replace(";", ",").split(",") if t.strip())
+def _row(entry: CatalogEntry, quantity: float) -> dict[str, object]:
+    return {
+        COL_DELETE: False,
+        COL_CATEGORY: entry.category,
+        COL_SYMBOL: entry.symbol,
+        COL_NAME: entry.name,
+        COL_CLASS: entry.asset_class.value,
+        COL_TAGS: ", ".join(entry.tags),
+        COL_QTY: float(quantity),
+    }
+
+
+def add_position(positions: pd.DataFrame, entry: CatalogEntry, quantity: float) -> pd.DataFrame:
+    """Add ``quantity`` of ``entry``; an asset already in the table has its quantity increased."""
+    if not quantity > 0:
+        raise PortfolioInputError("Miktar sıfırdan büyük olmalı.")
+    frame = positions.copy()
+    frame[COL_QTY] = frame[COL_QTY].astype(float)
+    existing = frame[COL_SYMBOL] == entry.symbol
+    if existing.any():
+        frame.loc[existing, COL_QTY] = frame.loc[existing, COL_QTY].astype(float) + quantity
+        return frame.reset_index(drop=True)
+    new = pd.DataFrame([_row(entry, quantity)], columns=POSITION_COLUMNS)
+    return pd.concat([frame, new], ignore_index=True) if len(frame) else new
+
+
+def remove_marked(positions: pd.DataFrame) -> pd.DataFrame:
+    """Drop the rows whose delete box is ticked."""
+    keep = ~positions[COL_DELETE].fillna(False).astype(bool)
+    return positions[keep].reset_index(drop=True)
 
 
 def frames_to_portfolio(
     positions: pd.DataFrame, cash: pd.DataFrame, name: str = "web-portfolio"
 ) -> Portfolio:
-    """Validate the editor tables and build a ``Portfolio`` (fully empty rows are ignored)."""
+    """Build a ``Portfolio`` from the tables; asset details always come from the catalog."""
     built_positions: list[Position] = []
     for idx, row in enumerate(positions.to_dict("records"), start=1):
         symbol, qty = row.get(COL_SYMBOL), row.get(COL_QTY)
-        if _blank(symbol) and _blank(qty):
+        if _blank(symbol):
             continue
-        if _blank(symbol) or _blank(qty):
-            raise PortfolioInputError(f"Pozisyon satırı {idx}: sembol ve miktar birlikte gerekli.")
-        asset_class = row.get(COL_CLASS)
-        if _blank(asset_class):
-            raise PortfolioInputError(f"Pozisyon satırı {idx}: varlık sınıfı seçilmeli.")
         try:
-            asset = Asset(
-                symbol=str(symbol),
-                asset_class=AssetClass(str(asset_class)),
-                tags=parse_tags(row.get(COL_TAGS)),
-            )
-            broker = row.get(COL_BROKER)
+            entry = get_entry(str(symbol))
+        except KeyError as exc:
+            raise PortfolioInputError(f"Pozisyon satırı {idx}: {exc.args[0]}") from exc
+        try:
+            quantity = _to_float(qty)
             built_positions.append(
-                Position(
-                    asset=asset,
-                    quantity=_to_float(qty),
-                    broker="Custom" if _blank(broker) else str(broker),
-                )
+                Position(asset=entry.to_asset(), quantity=quantity, broker=entry.broker)
             )
         except (ValidationError, ValueError) as exc:
-            raise PortfolioInputError(f"Pozisyon satırı {idx} ({symbol}): geçersiz değer.") from exc
+            raise PortfolioInputError(
+                f"Pozisyon satırı {idx} ({entry.symbol}): miktar sıfırdan büyük olmalı."
+            ) from exc
 
     built_cash: list[CashBalance] = []
     for idx, row in enumerate(cash.to_dict("records"), start=1):
@@ -122,24 +144,19 @@ def frames_to_portfolio(
 
 
 def portfolio_to_frames(portfolio: Portfolio) -> tuple[pd.DataFrame, pd.DataFrame]:
-    positions = pd.DataFrame(
-        [
-            {
-                COL_BROKER: p.broker,
-                COL_SYMBOL: p.asset.symbol,
-                COL_CLASS: p.asset.asset_class.value,
-                COL_QTY: p.quantity,
-                COL_TAGS: ", ".join(p.asset.tags),
-            }
-            for p in portfolio.positions
-        ],
-        columns=POSITION_COLUMNS,
-    )
+    """Inverse of :func:`frames_to_portfolio`; symbols must exist in the catalog."""
+    frame = empty_positions()
+    for symbol, quantity in portfolio.quantities().items():
+        try:
+            entry = get_entry(symbol)
+        except KeyError as exc:
+            raise PortfolioInputError(exc.args[0]) from exc
+        frame = add_position(frame, entry, quantity)
     cash = pd.DataFrame(
         [{COL_BROKER: c.broker, COL_AMOUNT: c.amount} for c in portfolio.cash],
         columns=CASH_COLUMNS,
     )
-    return positions, cash
+    return frame, cash
 
 
 def load_sample_portfolio() -> Portfolio:
@@ -149,9 +166,7 @@ def load_sample_portfolio() -> Portfolio:
     raise FileNotFoundError("examples/portfolio.json bulunamadı.")
 
 
-def broker_options(*frames: pd.DataFrame) -> list[str]:
-    """Dropdown options: the standard brokers plus any others present in the tables."""
-    extra = {
-        str(b) for f in frames for b in f[COL_BROKER].dropna() if str(b) and str(b) not in BROKERS
-    }
+def broker_options(cash: pd.DataFrame) -> list[str]:
+    """Cash-broker dropdown: the standard brokers plus any others present in the table."""
+    extra = {str(b) for b in cash[COL_BROKER].dropna() if str(b) and str(b) not in BROKERS}
     return [*BROKERS, *sorted(extra)]

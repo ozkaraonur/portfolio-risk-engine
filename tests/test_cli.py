@@ -18,7 +18,7 @@ def test_version() -> None:
 def test_summary_synthetic() -> None:
     result = runner.invoke(app, ["summary", str(EXAMPLE), "--seed", "1"])
     assert result.exit_code == 0, result.output
-    for token in ("AAPL", "BTC", "GC", "CASH", "TOTAL"):
+    for token in ("AAPL", "BTC", "GOLD", "CASH", "TOTAL"):
         assert token in result.output
 
 

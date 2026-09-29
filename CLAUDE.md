@@ -10,6 +10,7 @@ Modular multi-broker portfolio risk and stress-testing engine (Python 3.11+).
 - `src/portfolio_risk/risk/monte_carlo.py` + `linalg.py` — Cholesky/nearest-PSD, correlated GBM paths (buy-and-hold), MC VaR/CVaR, drawdown and ruin metrics.
 - `src/portfolio_risk/risk/scenarios.py` + `stress.py` — built-in historical shocks, custom/tag/symbol shocks, beta-driven market shocks; `run_stress` gives per-asset P&L and worst case. Shock precedence: symbol > tag > class.
 - `src/portfolio_risk/reporting/` — `build_analysis` runs everything once into a `RiskAnalysis`; renderers: `terminal.py` (rich), `html.py` (self-contained, escape all dynamic text, no external requests), `markdown.py`. Sample output in `docs/sample/` (regenerate: `python examples/run_demo.py docs/sample`).
+- `src/portfolio_risk/catalog.py` — fixed asset universe (category, class, tags, broker, calibrated synthetic profile); the web panel selects from it and uses `SyntheticProvider(profiles=synthetic_profiles())` only.
 - `src/portfolio_risk/web/` — Streamlit panel: `builder.py` (pure table<->Portfolio logic, unit-tested), `app.py` (UI; tested with `streamlit.testing.v1.AppTest`). Launch via `pre web`.
 - `src/portfolio_risk/cli.py` — Typer CLI (`pre`, or `python -m portfolio_risk`).
 - `tests/` — pytest; **must never touch the network** (inject fakes into `StooqProvider`).
