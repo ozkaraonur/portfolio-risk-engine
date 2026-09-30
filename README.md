@@ -28,10 +28,11 @@ and cash across brokers and answers the questions a risk committee asks:
 | Model validation | Rolling VaR backtest with Kupiec / Christoffersen tests, Basel traffic-light zones and violation charts in the reports |
 | Monte Carlo | Cholesky-correlated multivariate GBM (normal or Student-t shocks, sample / EWMA / Ledoit-Wolf covariance), terminal percentiles, drawdown distribution, first-passage ruin probability |
 | Stress testing | Built-in historical shocks, custom class / tag / symbol shocks, beta-driven market shocks |
-| Web panel | Streamlit UI: portfolio builder, one-click analysis, HTML report download |
+| Limits and history | `pre check` compares the portfolio with a limits file (exit code 2 on breach, for cron / CI); runs can be recorded in SQLite and reviewed with `pre history` |
+| Web panel | Streamlit UI: portfolio builder, one-click analysis, HTML report download, synthetic or real (Yahoo) data, 14 interface languages, 15 reporting currencies |
 | Reporting | Rich terminal dashboard, zero-dependency HTML report (inline CSS/SVG), Markdown summary |
 | Data | Offline seeded GBM provider (tests, demos), Yahoo Finance public-data provider (no API key, incl. BIST) with an on-disk cache, FX conversion, broker CSV import |
-| Engineering | Pydantic v2 models, `mypy --strict`, ruff, 230+ deterministic tests, Docker, CI on 3.11 / 3.12 |
+| Engineering | Pydantic v2 models, `mypy --strict`, ruff, 350+ deterministic tests, Docker, CI on 3.11 / 3.12 |
 
 ## Architecture
 
@@ -67,10 +68,10 @@ src/portfolio_risk/
   risk/        covariance, var, tail_models, estimators, attribution, optimize, backtest,
                coverage, linalg,
                monte_carlo, scenarios, stress, report
-  reporting/   analysis (orchestration), terminal, html, markdown
-  web/         Streamlit panel (app.py) and UI-independent table -> Portfolio builder
-  cli.py       Typer CLI: summary | risk | attribute | optimize | backtest | simulate |
-               stress | report | web
+  reporting/   analysis (orchestration), terminal, html, markdown, limits, history (SQLite)
+  web/         Streamlit panel (app.py), i18n (translations), UI-independent table -> Portfolio builder
+  cli.py       Typer CLI: import | summary | risk | attribute | optimize | backtest | simulate |
+               stress | report | check | history | web
 ```
 
 ## Quick start
