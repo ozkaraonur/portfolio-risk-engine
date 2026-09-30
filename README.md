@@ -22,8 +22,9 @@ and cash across brokers and answers the questions a risk committee asks:
 | Capability | Detail |
 | --- | --- |
 | Multi-broker portfolios | Same asset at several brokers is aggregated; per-broker cash; equities, crypto, commodities |
-| Risk metrics | Parametric and historical-simulation VaR / CVaR at 95% / 99%, 1-day / 10-day horizons |
-| Monte Carlo | Cholesky-correlated multivariate GBM, terminal percentiles, drawdown distribution, first-passage ruin probability |
+| Risk metrics | Parametric and historical-simulation VaR / CVaR at 95% / 99%, 1-day / 10-day horizons; fat-tail models (EWMA, Student-t, Cornish-Fisher, filtered historical simulation) via `--all-methods` |
+| Model validation | Rolling VaR backtest with Kupiec / Christoffersen tests, Basel traffic-light zones and violation charts in the reports |
+| Monte Carlo | Cholesky-correlated multivariate GBM (normal or Student-t shocks, sample / EWMA / Ledoit-Wolf covariance), terminal percentiles, drawdown distribution, first-passage ruin probability |
 | Stress testing | Built-in historical shocks, custom class / tag / symbol shocks, beta-driven market shocks |
 | Web panel | Streamlit UI: portfolio builder, one-click analysis, HTML report download |
 | Reporting | Rich terminal dashboard, zero-dependency HTML report (inline CSS/SVG), Markdown summary |
@@ -60,10 +61,11 @@ flowchart LR
 src/portfolio_risk/
   models/      Asset, Position, CashBalance, Portfolio (immutable pydantic v2 models)
   data/        PriceProvider ABC, SyntheticProvider (GBM), StooqProvider
-  risk/        covariance, var, linalg, monte_carlo, scenarios, stress, report
+  risk/        covariance, var, tail_models, estimators, backtest, coverage, linalg,
+               monte_carlo, scenarios, stress, report
   reporting/   analysis (orchestration), terminal, html, markdown
   web/         Streamlit panel (app.py) and UI-independent table -> Portfolio builder
-  cli.py       Typer CLI: summary | risk | simulate | stress | report | web
+  cli.py       Typer CLI: summary | risk | backtest | simulate | stress | report | web
 ```
 
 ## Quick start
@@ -99,9 +101,9 @@ No internet is needed: the default provider generates reproducible synthetic pri
 | Command | Purpose |
 | --- | --- |
 | `pre summary <file>` | Latest valuation and weights |
-| `pre risk <file> --confidence 0.99 --horizon 10` | Parametric and historical VaR / CVaR, diversification, correlations |
-| `pre backtest <file> --confidence 0.99 --window 250` | Rolling one-day VaR backtest: violations, Kupiec / Christoffersen tests, Basel zone |
-| `pre simulate <file> -n 10000 -t 252 --seed 42` | Monte Carlo VaR / CVaR, percentiles, drawdowns, ruin probability |
+| `pre risk <file> --confidence 0.99 --horizon 10 [--all-methods]` | Parametric and historical VaR / CVaR, diversification, correlations; all six models with `--all-methods` |
+| `pre backtest <file> --confidence 0.99 --window 250` | Rolling one-day VaR backtest: violations, Kupiec / Christoffersen tests, Basel zone for all six models |
+| `pre simulate <file> -n 10000 -t 252 --seed 42 [--df 5] [--cov-method ewma]` | Monte Carlo VaR / CVaR, percentiles, drawdowns, ruin probability |
 | `pre stress <file> [--scenario gfc-2008] [--custom "equity=-0.15,crypto=-0.30"] [--market-shock -0.10]` | Scenario P&L per asset, worst case |
 | `pre report <file> --html report.html --markdown report.md` | Everything at once: dashboard plus reports |
 | `pre web` | Launch the Streamlit web panel |
@@ -184,6 +186,17 @@ VaR / CVaR
 | historical |     10d |   95% | 1,215.23 | 1,438.04 |        37.4% |
 | historical |     10d |   99% | 1,567.66 | 1,750.89 |        39.5% |
 +-------------------------------------------------------------------+
+VaR backtest (99% one-day, 532 days)
++-----------------------------------------------------------------------+
+| Method         | Violations | Expected | Kupiec p | Indep. p |   Zone |
+|----------------+------------+----------+----------+----------+--------|
+| parametric     |          4 |      5.3 |    0.547 |    0.805 |  green |
+| historical     |         10 |      5.3 |    0.069 |    0.536 | yellow |
+| ewma           |          4 |      5.3 |    0.547 |    0.805 |  green |
+| student-t      |          4 |      5.3 |    0.547 |    0.805 |  green |
+| cornish-fisher |          4 |      5.3 |    0.547 |    0.805 |  green |
+| fhs            |          9 |      5.3 |    0.145 |    0.577 | yellow |
++-----------------------------------------------------------------------+
 Monte Carlo (10,000 x 252d)
 +------------------------------------+
 | Metric        |     Value | Change |
@@ -241,6 +254,23 @@ Each historical day (compounded over `h` days, overlapping windows) is applied t
 to build a P&L distribution. VaR is its `(1 − c)` quantile loss; CVaR is the mean loss beyond it. No
 distributional assumption, but limited to what the sample has seen.
 
+### Fat-tail and volatility-aware models
+
+`pre risk --all-methods` and `pre backtest` add four estimators next to the two classic ones. Except
+where noted they work on the portfolio P&L of today's exposures over the estimation window and use
+square-root-of-time scaling for `h > 1`.
+
+| Model | Idea |
+| --- | --- |
+| `ewma` | Normal VaR with a RiskMetrics exponentially weighted covariance (`λ = 0.94`): reacts quickly to volatility regimes |
+| `student-t` | Same volatility as the normal model, Student-t tail shape; `df` from the sample excess kurtosis (`df = 4 + 6 / k`, clamped to `[4.1, 100]`) |
+| `cornish-fisher` | Normal quantile corrected for sample skewness and kurtosis; never below the normal quantile because the expansion stops being monotone for extreme moments |
+| `fhs` | Filtered historical simulation: historical P&L divided by the EWMA volatility of the day before, rescaled with tomorrow's forecast |
+
+Monte Carlo can use multivariate Student-t shocks (`--df`, one chi-square mixing draw per path-day
+shared by all assets, so extremes hit together) and three covariance estimators (`--cov-method
+sample | ewma | shrinkage`, the last being Ledoit-Wolf shrinkage towards a scaled identity).
+
 ### Diversification benefit
 
 ```
@@ -278,8 +308,30 @@ exceeds the forecast.
 - **Basel traffic light**: green / yellow / red from the binomial tail of the violation count
   (0-4 / 5-9 / 10+ violations for 250 days at 99%).
 
-Synthetic prices are Gaussian, so both models usually pass on them; the tests are meant to expose
-fat tails and volatility clustering in real data.
+Synthetic prices are Gaussian, so the models usually pass on them; the tests are meant to expose
+fat tails and volatility clustering in real data. The reports include the table for all six models
+plus a P&L-versus-VaR chart with the violations marked.
+
+Model comparison on simulated data (one-day 99% VaR, 250-day window; `p` below 0.05 rejects). These
+runs use the seeded generators of `tests/test_backtest.py`, whose assertions check the ordering of
+the models rather than these exact counts (the Student-t test uses a shorter sample):
+
+| Data | Model | Violations (expected) | Kupiec p | Independence p |
+| --- | --- | --- | --- | --- |
+| GARCH(1,1), 3,750 test days | parametric | 54 (37.5) | 0.011 | 0.008 |
+| | historical | 61 (37.5) | 0.000 | 0.003 |
+| | **ewma** | 42 (37.5) | 0.469 | 0.329 |
+| | student-t | 48 (37.5) | 0.099 | 0.026 |
+| | fhs | 52 (37.5) | 0.025 | 0.753 |
+| i.i.d. Student-t(3), 5,750 test days | parametric | 111 (57.5) | 0.000 | 0.247 |
+| | historical | 77 (57.5) | 0.014 | 0.391 |
+| | ewma | 140 (57.5) | 0.000 | 0.408 |
+| | student-t | 83 (57.5) | 0.002 | 0.159 |
+| | cornish-fisher | 40 (57.5) | 0.014 | 0.285 |
+
+Volatility clustering (GARCH) is handled by EWMA and FHS; static fat tails (i.i.d. t) are not:
+EWMA overreacts to single outliers there and is the worst model, while Cornish-Fisher is
+over-conservative (40 violations against 57.5 expected) because moments from 250 samples are noisy.
 
 ### Stress testing
 
@@ -300,7 +352,7 @@ with cash at zero.
 
 - Reports are model outputs, not forecasts or investment advice.
 - Single-currency valuation (no FX); long-only positions.
-- Parametric VaR assumes zero-mean normal returns (no fat tails or skew); the backtest can flag this; historical VaR needs a representative sample.
+- Parametric VaR assumes zero-mean normal returns (no fat tails or skew); the backtest can flag this and the fat-tail models are alternatives, not fixes: Student-t and Cornish-Fisher use moments estimated from one window; historical VaR needs a representative sample.
 - Synthetic data is for testing and demos. Its volatilities and correlations are configurable
   defaults, not market estimates.
 - The Stooq provider relies on a public endpoint and is not exercised by the test suite.

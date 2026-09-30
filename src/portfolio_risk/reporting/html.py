@@ -13,7 +13,7 @@ from portfolio_risk.reporting.analysis import (
     HORIZONS,
     RiskAnalysis,
 )
-from portfolio_risk.risk import Method, MonteCarloReport
+from portfolio_risk.risk import CORE_METHODS, BacktestResult, MonteCarloReport
 
 CSS = """
 :root{--bg:#f6f7f9;--card:#fff;--fg:#1a2230;--muted:#5f6b7a;--line:#e3e7ec;--accent:#2b6cb0;
@@ -46,6 +46,9 @@ svg text{fill:var(--muted);font-size:11px}
 footer{margin-top:40px;color:var(--muted);font-size:12px}
 @media print{body{background:#fff}.card,table,svg{break-inside:avoid}}
 """
+
+
+_ZONE_CLASS = {"green": "pos", "red": "neg"}
 
 
 def _cls(value: float) -> str:
@@ -109,6 +112,79 @@ def _histogram(mc: MonteCarloReport) -> str:
         f'<svg viewBox="0 0 {width} {height}" role="img" '
         f'aria-label="Distribution of terminal portfolio value">{bars}{marks}{axis}</svg>'
     )
+
+
+def _backtest_chart(r: BacktestResult) -> str:
+    """Daily P&L (bars), VaR forecast (line, mirrored below zero) and violations (red dots)."""
+    width, height, pad = 720, 220, 28
+    n = r.n_obs
+    lo = min(float(r.pnl.min()), float(-r.var.max()), -1e-9)
+    hi = max(float(r.pnl.max()), 1e-9)
+    span = hi - lo
+
+    def x(i: int) -> float:
+        return pad + i / max(n - 1, 1) * (width - 2 * pad)
+
+    def y(v: float) -> float:
+        return height - pad - (v - lo) / span * (height - 2 * pad)
+
+    zero = y(0.0)
+    bars = "".join(
+        f'<line x1="{x(i):.1f}" x2="{x(i):.1f}" y1="{zero:.1f}" y2="{y(float(v)):.1f}"/>'
+        for i, v in enumerate(r.pnl)
+    )
+    line = " ".join(f"{x(i):.1f},{y(-float(v)):.1f}" for i, v in enumerate(r.var))
+    dots = "".join(
+        f'<circle cx="{x(int(i)):.1f}" cy="{y(float(r.pnl[i])):.1f}" r="3" fill="var(--bad)"/>'
+        for i in np.flatnonzero(r.violations)
+    )
+    label = (
+        f'<text x="{pad}" y="{height - 8}">{r.dates[0].date()}</text>'
+        f'<text x="{width - pad}" y="{height - 8}" text-anchor="end">{r.dates[-1].date()}</text>'
+        f'<text x="{width - pad}" y="{pad - 12}" text-anchor="end">'
+        f"{escape(r.method.value)}: {r.n_violations} violations "
+        f"(expected {r.expected_violations:.1f})</text>"
+    )
+    return (
+        f'<svg viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="Backtest of {escape(r.method.value)} VaR: P&amp;L versus forecast">'
+        f'<g stroke="var(--accent)" stroke-width="1" opacity="0.55">{bars}</g>'
+        f'<line x1="{pad}" x2="{width - pad}" y1="{zero:.1f}" y2="{zero:.1f}" '
+        f'stroke="var(--muted)" opacity="0.5"/>'
+        f'<polyline points="{line}" fill="none" stroke="var(--fg)" stroke-width="1.4"/>'
+        f"{dots}{label}</svg>"
+    )
+
+
+def _backtest_section(a: RiskAnalysis) -> str:
+    if not a.backtests:
+        return ""
+    first = a.backtests[0]
+    rows = [
+        [
+            escape(r.method.value),
+            str(r.n_violations),
+            f"{r.expected_violations:.1f}",
+            f"{r.kupiec.p_value:.3f}",
+            f"{r.independence.p_value:.3f}",
+            f'<span class="{_ZONE_CLASS.get(r.zone.value, "")}">{r.zone.value}</span>',
+        ]
+        for r in a.backtests
+    ]
+    charts = "".join(
+        f"<h3>{escape(r.method.value.capitalize())} VaR vs realised P&amp;L</h3>"
+        f"{_backtest_chart(r)}"
+        for r in a.backtests
+        if r.method in CORE_METHODS
+    )
+    return f"""<h2>Model Validation (VaR Backtest)</h2>
+<p>One-day {first.confidence:.0%} VaR re-estimated every day from the previous
+{first.window} days and compared with the realised P&amp;L of today's positions over
+{first.n_obs} test days. Kupiec tests the violation rate, independence tests for clustering
+(p &lt; 0.05 rejects the model).</p>
+{_table(["Method", "Violations", "Expected", "Kupiec p", "Independence p", "Basel zone"], rows)}
+{charts}
+"""
 
 
 def render_html(a: RiskAnalysis) -> str:
@@ -183,7 +259,7 @@ def render_html(a: RiskAnalysis) -> str:
             f"{a.var_report(m, c, h).diversification_benefit:,.2f} "
             f"({a.var_report(m, c, h).diversification_ratio:.1%})",
         ]
-        for m in Method
+        for m in CORE_METHODS
         for h in HORIZONS
         for c in CONFIDENCES
     ]
@@ -266,6 +342,7 @@ observations &middot; seed {a.seed}</div>
 <h2>Statistical Risk</h2>
 {var_table}
 
+{_backtest_section(a)}
 <h2>Monte Carlo ({mc.n_simulations:,} paths &times; {mc.days} days)</h2>
 {_histogram(mc)}
 <h3>Terminal portfolio value</h3>

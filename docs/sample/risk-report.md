@@ -43,6 +43,19 @@
 | historical | 10d | 95% | 1,215.23 | 1,438.04 | 37.4% |
 | historical | 10d | 99% | 1,567.66 | 1,750.89 | 39.5% |
 
+## Model Validation (VaR Backtest)
+
+One-day 99% VaR, 532 test days, 250-day estimation window.
+
+| Method | Violations | Expected | Kupiec p | Independence p | Basel zone |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| parametric | 4 | 5.3 | 0.547 | 0.805 | green |
+| historical | 10 | 5.3 | 0.069 | 0.536 | yellow |
+| ewma | 4 | 5.3 | 0.547 | 0.805 | green |
+| student-t | 4 | 5.3 | 0.547 | 0.805 | green |
+| cornish-fisher | 4 | 5.3 | 0.547 | 0.805 | green |
+| fhs | 9 | 5.3 | 0.145 | 0.577 | yellow |
+
 ## Monte Carlo (10,000 paths x 252 days)
 
 | Terminal value | Amount | Change |

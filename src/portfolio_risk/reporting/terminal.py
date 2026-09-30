@@ -15,7 +15,7 @@ from portfolio_risk.reporting.analysis import (
     HORIZONS,
     RiskAnalysis,
 )
-from portfolio_risk.risk import Method
+from portfolio_risk.risk import CORE_METHODS
 
 
 def _signed(value: float, text: str) -> Text:
@@ -77,7 +77,7 @@ def render_dashboard(a: RiskAnalysis, console: Console) -> None:
         )
 
     var = _table("VaR / CVaR", "Method", "Horizon", "Conf.", "VaR", "CVaR", "Div. benefit")
-    for m in Method:
+    for m in CORE_METHODS:
         for h in HORIZONS:
             for c in CONFIDENCES:
                 vr = a.var_report(m, c, h)
@@ -90,6 +90,29 @@ def render_dashboard(a: RiskAnalysis, console: Console) -> None:
                     f"{vr.diversification_ratio:.1%}",
                 )
     console.print(Group(alloc, corr, var))
+
+    if a.backtests:
+        first = a.backtests[0]
+        bt = _table(
+            f"VaR backtest ({first.confidence:.0%} one-day, {first.n_obs} days)",
+            "Method",
+            "Violations",
+            "Expected",
+            "Kupiec p",
+            "Indep. p",
+            "Zone",
+        )
+        colours = {"green": "green", "yellow": "yellow", "red": "red"}
+        for r in a.backtests:
+            bt.add_row(
+                r.method.value,
+                str(r.n_violations),
+                f"{r.expected_violations:.1f}",
+                f"{r.kupiec.p_value:.3f}",
+                f"{r.independence.p_value:.3f}",
+                Text(r.zone.value, style=colours[r.zone.value]),
+            )
+        console.print(bt)
 
     sim = _table(f"Monte Carlo ({mc.n_simulations:,} x {mc.days}d)", "Metric", "Value", "Change")
     for label, v in [

@@ -9,7 +9,7 @@ from portfolio_risk.reporting.analysis import (
     HORIZONS,
     RiskAnalysis,
 )
-from portfolio_risk.risk import Method
+from portfolio_risk.risk import CORE_METHODS
 
 
 def _table(header: list[str], rows: list[list[str]], right_from: int = 1) -> list[str]:
@@ -72,7 +72,7 @@ def render_markdown(a: RiskAnalysis) -> str:
 
     out += ["## Statistical Risk", ""]
     rows = []
-    for m in Method:
+    for m in CORE_METHODS:
         for h in HORIZONS:
             for c in CONFIDENCES:
                 r = a.var_report(m, c, h)
@@ -87,6 +87,30 @@ def render_markdown(a: RiskAnalysis) -> str:
                     ]
                 )
     out += _table(["Method", "Horizon", "Conf.", "VaR", "CVaR", "Div. benefit"], rows, 3)
+
+    if a.backtests:
+        first = a.backtests[0]
+        out += [
+            "## Model Validation (VaR Backtest)",
+            "",
+            f"One-day {first.confidence:.0%} VaR, {first.n_obs} test days, "
+            f"{first.window}-day estimation window.",
+            "",
+        ]
+        out += _table(
+            ["Method", "Violations", "Expected", "Kupiec p", "Independence p", "Basel zone"],
+            [
+                [
+                    r.method.value,
+                    str(r.n_violations),
+                    f"{r.expected_violations:.1f}",
+                    f"{r.kupiec.p_value:.3f}",
+                    f"{r.independence.p_value:.3f}",
+                    r.zone.value,
+                ]
+                for r in a.backtests
+            ],
+        )
 
     out += [
         f"## Monte Carlo ({mc.n_simulations:,} paths x {mc.days} days)",

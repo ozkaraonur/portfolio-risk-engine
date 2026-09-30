@@ -25,6 +25,8 @@ from portfolio_risk.models import Asset, AssetClass, Portfolio
 from portfolio_risk.reporting import build_analysis, render_dashboard, render_html, render_markdown
 from portfolio_risk.risk import (
     BUILTIN_SCENARIOS,
+    CORE_METHODS,
+    CovMethod,
     Method,
     Scenario,
     analyze_risk,
@@ -105,6 +107,9 @@ def risk(
     provider: Annotated[ProviderName, typer.Option(help="Price source.")] = ProviderName.SYNTHETIC,
     seed: Annotated[int, typer.Option(help="Seed for the synthetic provider.")] = 42,
     days: Annotated[int, typer.Option(min=60, help="History length in calendar days.")] = 730,
+    all_methods: Annotated[
+        bool, typer.Option("--all-methods", help="Also show EWMA, Student-t, Cornish-Fisher, FHS.")
+    ] = False,
 ) -> None:
     """VaR, CVaR (parametric and historical), diversification and correlations."""
     try:
@@ -115,13 +120,13 @@ def risk(
         )
         reports = [
             analyze_risk(portfolio, prices, method=m, confidence=confidence, horizon=horizon)
-            for m in Method
+            for m in (Method if all_methods else CORE_METHODS)
         ]
     except (ValidationError, DataUnavailableError, ValueError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    parametric, historical = reports
+    parametric, historical = reports[0], reports[1]
     typer.echo(
         f"{portfolio.name}: {confidence:.1%} confidence, {horizon}-day horizon, "
         f"value {parametric.portfolio_value:,.2f} {portfolio.base_currency}"
@@ -176,12 +181,12 @@ def backtest(
         f"({first.dates[0].date()} to {first.dates[-1].date()}), window {window}"
     )
     typer.echo(
-        f"{'METHOD':<12}{'VIOLATIONS':>11}{'EXPECTED':>10}{'RATE':>8}"
+        f"{'METHOD':<16}{'VIOLATIONS':>11}{'EXPECTED':>10}{'RATE':>8}"
         f"{'KUPIEC p':>10}{'INDEP. p':>10}{'COND. p':>9}{'ZONE':>8}"
     )
     for r in results:
         typer.echo(
-            f"{r.method.value:<12}{r.n_violations:>11}{r.expected_violations:>10.1f}"
+            f"{r.method.value:<16}{r.n_violations:>11}{r.expected_violations:>10.1f}"
             f"{r.violation_rate:>8.2%}{r.kupiec.p_value:>10.3f}{r.independence.p_value:>10.3f}"
             f"{r.conditional_coverage.p_value:>9.3f}{r.zone.value:>8}"
         )
@@ -204,6 +209,13 @@ def simulate(
         float, typer.Option(min=0.01, max=1.0, help="Loss fraction defining ruin, e.g. 0.3.")
     ] = 0.3,
     drift: Annotated[bool, typer.Option(help="Use historical mean returns as drift.")] = False,
+    df: Annotated[
+        float | None,
+        typer.Option(min=2.1, help="Student-t degrees of freedom for fat-tailed shocks."),
+    ] = None,
+    cov_method: Annotated[
+        CovMethod, typer.Option(help="Covariance estimator for the simulation.")
+    ] = CovMethod.SAMPLE,
     provider: Annotated[ProviderName, typer.Option(help="Price source.")] = ProviderName.SYNTHETIC,
     history_days: Annotated[
         int, typer.Option(min=60, help="Calendar days of history used to estimate risk.")
@@ -224,6 +236,8 @@ def simulate(
             seed=seed,
             loss_threshold=loss_threshold,
             use_drift=drift,
+            df=df,
+            cov_method=cov_method,
         )
     except (ValidationError, DataUnavailableError, ValueError) as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -234,6 +248,8 @@ def simulate(
         f"{portfolio.name}: {result.n_simulations:,} paths x {result.days} days, "
         f"start value {v0:,.2f} {portfolio.base_currency}"
     )
+    shocks = "normal" if df is None else f"Student-t (df={df:g})"
+    typer.echo(f"Shocks: {shocks}, covariance: {cov_method.value}")
     typer.echo("\nLoss over horizon:")
     typer.echo(f"{'CONFIDENCE':<12}{'VaR':>14}{'VaR %':>8}{'CVaR':>14}{'CVaR %':>8}")
     for c, var in result.var.items():

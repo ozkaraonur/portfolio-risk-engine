@@ -4,10 +4,12 @@ from datetime import date
 
 import numpy as np
 import pytest
+from scipy.stats import kurtosis
 
 from portfolio_risk.data import SyntheticProvider
 from portfolio_risk.models import Asset, AssetClass, CashBalance, Portfolio, Position
 from portfolio_risk.risk import (
+    CovMethod,
     Method,
     analyze_risk,
     cholesky_factor,
@@ -220,3 +222,41 @@ def test_run_monte_carlo_requires_history() -> None:
     prices = SyntheticProvider().get_prices(pf.assets, date(2024, 1, 1), date(2024, 1, 10))
     with pytest.raises(ValueError, match="observations"):
         run_monte_carlo(pf, prices, seed=0)
+
+
+def test_student_t_shocks_are_fat_tailed_with_unchanged_covariance() -> None:
+    cov = arr([0.0004, 0.0001], [0.0001, 0.0009])
+    mean = np.zeros(2)
+    normal = simulate_returns(cov, mean, 40_000, 1, np.random.default_rng(3))[:, 0, :]
+    fat = simulate_returns(cov, mean, 40_000, 1, np.random.default_rng(3), df=5.0)[:, 0, :]
+    assert kurtosis(normal[:, 0]) < 0.3
+    assert kurtosis(fat[:, 0]) > 1.5
+    assert np.cov(fat.T) == pytest.approx(cov, rel=0.1)
+
+
+def test_student_t_shocks_share_extremes_across_assets() -> None:
+    cov = arr([1e-4, 0.0], [0.0, 1e-4])  # uncorrelated
+    mean = np.zeros(2)
+
+    def joint_extreme(df: float | None) -> float:
+        r = simulate_returns(cov, mean, 200_000, 1, np.random.default_rng(4), df=df)[:, 0, :]
+        big = np.abs(r) > 3.5 * 0.01
+        return float((big[:, 0] & big[:, 1]).mean())
+
+    assert joint_extreme(4.0) > 5 * joint_extreme(None)
+
+
+def test_student_t_needs_df_above_two() -> None:
+    with pytest.raises(ValueError, match="df"):
+        simulate_returns(arr([1e-4]), np.zeros(1), 10, 1, np.random.default_rng(0), df=2.0)
+
+
+def test_run_monte_carlo_with_fat_tails_and_alternative_covariance() -> None:
+    pf = _portfolio()
+    prices = SyntheticProvider(seed=2).get_prices(pf.assets, date(2022, 1, 1), date(2024, 1, 1))
+    base = run_monte_carlo(pf, prices, n_simulations=20_000, days=20, seed=9)
+    fat = run_monte_carlo(pf, prices, n_simulations=20_000, days=20, seed=9, df=3.0)
+    assert fat.var[0.99] > base.var[0.99]
+    for method in CovMethod:
+        rep = run_monte_carlo(pf, prices, n_simulations=500, days=10, seed=1, cov_method=method)
+        assert rep.var[0.95] >= 0

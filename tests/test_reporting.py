@@ -172,3 +172,34 @@ def test_demo_script_generates_reports(tmp_path: Path) -> None:
     module["main"](tmp_path)
     assert (tmp_path / "risk-report.html").stat().st_size > 5000
     assert (tmp_path / "risk-report.md").read_text(encoding="utf-8").startswith("# Risk Report")
+
+
+def test_analysis_includes_a_backtest_for_every_method(analysis: RiskAnalysis) -> None:
+    assert [b.method for b in analysis.backtests] == list(Method)
+    assert all(b.confidence == 0.99 and b.window == 250 for b in analysis.backtests)
+    assert all(b.n_obs > 60 for b in analysis.backtests)
+
+
+def test_reports_render_the_backtest_section(analysis: RiskAnalysis) -> None:
+    html = render_html(analysis)
+    assert "Model Validation (VaR Backtest)" in html
+    assert "Parametric VaR vs realised P&amp;L" in html
+    assert "Historical VaR vs realised P&amp;L" in html
+    assert "cornish-fisher" in html
+    assert html.count("<polyline") == 2  # charts for the two core methods only
+    assert "https://" not in html
+    md = render_markdown(analysis)
+    assert "## Model Validation (VaR Backtest)" in md
+    assert "| student-t |" in md
+    buffer = io.StringIO()
+    render_dashboard(analysis, Console(file=buffer, width=120, color_system=None))
+    assert "VaR backtest" in buffer.getvalue()
+
+
+def test_backtest_is_skipped_when_history_is_short() -> None:
+    pf = Portfolio(name="short", positions=(Position(asset=AAPL, quantity=10, broker="a"),))
+    prices = SyntheticProvider(seed=3).get_prices([AAPL], date(2023, 1, 1), date(2023, 9, 1))
+    analysis = build_analysis(pf, prices, simulations=200, mc_days=20, seed=1)
+    assert analysis.backtests == ()
+    assert "Model Validation" not in render_html(analysis)
+    assert "Model Validation" not in render_markdown(analysis)

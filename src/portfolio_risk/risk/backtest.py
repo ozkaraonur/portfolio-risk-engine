@@ -14,7 +14,6 @@ import numpy.typing as npt
 import pandas as pd
 
 from portfolio_risk.models import Portfolio
-from portfolio_risk.risk.covariance import covariance_matrix
 from portfolio_risk.risk.coverage import (
     BoolArray,
     LikelihoodRatioTest,
@@ -24,8 +23,8 @@ from portfolio_risk.risk.coverage import (
     conditional_coverage,
     kupiec_pof,
 )
-from portfolio_risk.risk.report import MIN_OBS, Method
-from portfolio_risk.risk.var import historical_var_cvar, parametric_var_cvar
+from portfolio_risk.risk.estimators import Method, one_day_var_cvar
+from portfolio_risk.risk.report import MIN_OBS
 
 DEFAULT_WINDOW = 250
 
@@ -86,13 +85,14 @@ def rolling_var(
     window: int,
 ) -> npt.NDArray[np.float64]:
     """One-day VaR for each day after the first ``window``, using only the preceding window."""
+    pnl = np.asarray(
+        returns[list(exposures.index)].to_numpy(dtype=np.float64)
+        @ exposures.to_numpy(dtype=np.float64),
+        dtype=np.float64,
+    )
     forecasts = np.empty(len(returns) - window, dtype=np.float64)
     for i in range(forecasts.size):
-        history = returns.iloc[i : i + window]
-        if method is Method.PARAMETRIC:
-            forecasts[i] = parametric_var_cvar(exposures, covariance_matrix(history), confidence)[0]
-        else:
-            forecasts[i] = historical_var_cvar(exposures, history, confidence)[0]
+        forecasts[i] = one_day_var_cvar(method, pnl[i : i + window], confidence)[0]
     return forecasts
 
 

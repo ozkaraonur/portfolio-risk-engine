@@ -15,6 +15,7 @@ from portfolio_risk.risk import (
     basel_zone,
     christoffersen_independence,
     conditional_coverage,
+    estimate_var_cvar,
     kupiec_pof,
     rolling_var,
     run_backtest,
@@ -213,3 +214,60 @@ def test_backtest_validates_inputs() -> None:
         run_backtest(_portfolio(), prices, method=Method.PARAMETRIC, window=5)
     with pytest.raises(ValueError, match="confidence"):
         run_backtest(_portfolio(), prices, method=Method.PARAMETRIC, confidence=1.0, window=50)
+
+
+# --- model comparison ----------------------------------------------------------------------
+
+
+def _garch_returns(n: int, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    out = np.empty(n)
+    var = 1e-4
+    for i in range(n):
+        out[i] = np.sqrt(var) * rng.standard_normal()
+        var = 2e-6 + 0.1 * out[i] ** 2 + 0.88 * var
+    return out
+
+
+def test_ewma_beats_parametric_under_volatility_clustering() -> None:
+    prices = _prices_from_returns(_garch_returns(4000, seed=21))
+    parametric = run_backtest(_portfolio(), prices, method=Method.PARAMETRIC)
+    ewma = run_backtest(_portfolio(), prices, method=Method.EWMA)
+    assert parametric.conditional_coverage.rejects(0.01)
+    assert not ewma.conditional_coverage.rejects(0.05)
+    assert ewma.independence.p_value > parametric.independence.p_value
+
+
+def test_tail_aware_models_violate_less_than_normal_on_fat_tails() -> None:
+    prices = _prices_from_returns(_student_t_returns(3500, 3.0, 0.01, seed=11))
+    counts = {
+        m: run_backtest(_portfolio(), prices, method=m).n_violations
+        for m in (Method.PARAMETRIC, Method.STUDENT_T, Method.FHS, Method.CORNISH_FISHER)
+    }
+    assert counts[Method.STUDENT_T] < counts[Method.PARAMETRIC]
+    assert counts[Method.FHS] < counts[Method.PARAMETRIC]
+    assert counts[Method.CORNISH_FISHER] < counts[Method.PARAMETRIC]
+
+
+def test_every_method_backtests_on_synthetic_prices() -> None:
+    prices = SyntheticProvider(seed=8).get_prices([AAPL], date(2021, 1, 1), date(2024, 1, 1))
+    for method in Method:
+        result = run_backtest(_portfolio(), prices, method=method, window=120)
+        assert result.n_obs > 300
+        assert np.isfinite(result.var).all()
+
+
+@pytest.mark.parametrize("method", list(Method))
+def test_fast_rolling_forecast_matches_the_full_estimator(method: Method) -> None:
+    returns = pd.DataFrame(
+        {
+            "A": _student_t_returns(160, 5.0, 0.01, seed=31),
+            "B": _student_t_returns(160, 8.0, 0.02, seed=32),
+        },
+        index=pd.bdate_range("2020-01-01", periods=160),
+    )
+    exposures = pd.Series({"A": 700.0, "B": 300.0})
+    fast = rolling_var(exposures, returns, method=method, confidence=0.975, window=100)
+    for i in (0, 17, 59):
+        full = estimate_var_cvar(method, exposures, returns.iloc[i : i + 100], 0.975)[0]
+        assert fast[i] == pytest.approx(full, rel=1e-9)

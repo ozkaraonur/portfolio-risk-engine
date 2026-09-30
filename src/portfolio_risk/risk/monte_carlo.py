@@ -2,7 +2,9 @@
 
 Positions are held constant (buy-and-hold); cash earns nothing. Daily log-returns are
 ``(mu - sigma^2 / 2) + L z`` with ``L @ L.T = Sigma`` (Cholesky) and ``z ~ N(0, I)``, so the
-simple-return mean equals ``mu`` and the covariance equals ``Sigma``.
+simple-return mean equals ``mu`` and the covariance equals ``Sigma``. With ``df`` set, the shocks
+are multivariate Student-t (unit variance, one chi-square mixing draw per path-day shared by all
+assets, so extreme moves hit together); the Ito correction is then only approximate.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import numpy.typing as npt
 import pandas as pd
 
 from portfolio_risk.models import Portfolio
-from portfolio_risk.risk.covariance import covariance_matrix
+from portfolio_risk.risk.covariance import CovMethod, estimate_covariance
 from portfolio_risk.risk.linalg import FloatArray, cholesky_factor
 from portfolio_risk.risk.report import MIN_OBS
 
@@ -25,6 +27,8 @@ def simulate_returns(
     n_simulations: int,
     days: int,
     rng: np.random.Generator,
+    *,
+    df: float | None = None,
 ) -> FloatArray:
     """Correlated daily log-returns, shape ``(n_simulations, days, n_assets)``."""
     if n_simulations < 1 or days < 1:
@@ -34,6 +38,11 @@ def simulate_returns(
     chol = cholesky_factor(cov)
     drift = mean - 0.5 * np.diag(cov)
     shocks = rng.standard_normal((n_simulations, days, cov.shape[0]))
+    if df is not None:
+        if df <= 2.0:
+            raise ValueError("df must be greater than 2.")
+        mixing = rng.chisquare(df, size=(n_simulations, days, 1))
+        shocks = shocks * np.sqrt((df - 2.0) / mixing)
     return np.asarray(shocks @ chol.T + drift, dtype=np.float64)
 
 
@@ -45,9 +54,11 @@ def simulate_paths(
     n_simulations: int,
     days: int,
     rng: np.random.Generator,
+    *,
+    df: float | None = None,
 ) -> FloatArray:
     """Portfolio value paths, shape ``(n_simulations, days + 1)``; column 0 is today."""
-    log_r = simulate_returns(cov, mean, n_simulations, days, rng)
+    log_r = simulate_returns(cov, mean, n_simulations, days, rng, df=df)
     asset_factors = np.exp(np.cumsum(log_r, axis=1))  # (N, T, k) growth vs today
     values = asset_factors @ exposures + cash
     initial = float(exposures.sum() + cash)
@@ -141,11 +152,14 @@ def run_monte_carlo(
     confidences: tuple[float, ...] = (0.95, 0.99),
     loss_threshold: float = 0.3,
     use_drift: bool = False,
+    df: float | None = None,
+    cov_method: CovMethod = CovMethod.SAMPLE,
 ) -> MonteCarloReport:
     """Estimate mu/Sigma from ``prices`` and simulate the portfolio forward ``days`` days.
 
     Drift is zero by default (risk-focused, consistent with parametric VaR); set
-    ``use_drift`` to use each asset's historical mean daily return.
+    ``use_drift`` to use each asset's historical mean daily return. ``df`` switches to Student-t
+    shocks and ``cov_method`` selects the covariance estimator.
     """
     returns = prices[portfolio.symbols].pct_change().dropna()
     if len(returns) < MIN_OBS:
@@ -153,9 +167,16 @@ def run_monte_carlo(
     latest = {str(k): float(v) for k, v in prices.iloc[-1].items()}
     values = portfolio.market_values(latest)
     exposures = np.array([values[s] for s in returns.columns], dtype=np.float64)
-    cov = covariance_matrix(returns).to_numpy(dtype=np.float64)
+    cov = estimate_covariance(returns, cov_method).to_numpy(dtype=np.float64)
     mean = returns.mean().to_numpy(dtype=np.float64) if use_drift else np.zeros(len(exposures))
     paths = simulate_paths(
-        exposures, portfolio.total_cash, cov, mean, n_simulations, days, np.random.default_rng(seed)
+        exposures,
+        portfolio.total_cash,
+        cov,
+        mean,
+        n_simulations,
+        days,
+        np.random.default_rng(seed),
+        df=df,
     )
     return summarize_paths(paths, confidences=confidences, loss_threshold=loss_threshold)

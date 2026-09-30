@@ -99,3 +99,33 @@ def test_stress_custom_only_skips_builtins() -> None:
 def test_stress_errors() -> None:
     assert runner.invoke(app, ["stress", str(EXAMPLE), "--scenario", "nope"]).exit_code == 1
     assert runner.invoke(app, ["stress", str(EXAMPLE), "--custom", "ZZZ=-0.1"]).exit_code == 1
+
+
+def test_backtest_lists_every_method() -> None:
+    result = runner.invoke(app, ["backtest", str(EXAMPLE), "--seed", "1", "--window", "120"])
+    assert result.exit_code == 0, result.output
+    for method in ("ewma", "student-t", "cornish-fisher", "fhs"):
+        assert method in result.output
+
+
+def test_risk_all_methods() -> None:
+    result = runner.invoke(app, ["risk", str(EXAMPLE), "--seed", "1", "--all-methods"])
+    assert result.exit_code == 0, result.output
+    for method in ("parametric", "historical", "ewma", "student-t", "cornish-fisher", "fhs"):
+        assert method in result.output
+    default = runner.invoke(app, ["risk", str(EXAMPLE), "--seed", "1"])
+    assert "student-t" not in default.output
+
+
+def test_simulate_with_fat_tails_and_shrinkage() -> None:
+    args = ["simulate", str(EXAMPLE), "-n", "400", "-t", "30", "--seed", "1"]
+    fat = runner.invoke(app, [*args, "--df", "4", "--cov-method", "shrinkage"])
+    assert fat.exit_code == 0, fat.output
+    assert "Student-t (df=4)" in fat.output
+    assert "shrinkage" in fat.output
+    assert "normal" in runner.invoke(app, args).output
+
+
+def test_simulate_rejects_df_at_or_below_two() -> None:
+    result = runner.invoke(app, ["simulate", str(EXAMPLE), "--df", "2"])
+    assert result.exit_code != 0

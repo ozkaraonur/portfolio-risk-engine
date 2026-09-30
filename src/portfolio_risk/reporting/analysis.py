@@ -10,12 +10,15 @@ import pandas as pd
 from portfolio_risk.models import Portfolio
 from portfolio_risk.risk import (
     BUILTIN_SCENARIOS,
+    CORE_METHODS,
+    BacktestResult,
     Method,
     MonteCarloReport,
     RiskReport,
     StressReport,
     analyze_risk,
     correlation_matrix,
+    run_backtest,
     run_monte_carlo,
     run_stress,
 )
@@ -24,6 +27,9 @@ CONFIDENCES = (0.95, 0.99)
 HORIZONS = (1, 10)
 HEADLINE_CONFIDENCE = 0.99
 HEADLINE_HORIZON = 10
+BACKTEST_CONFIDENCE = 0.99
+BACKTEST_WINDOW = 250
+MIN_BACKTEST_DAYS = 60  # test days needed on top of the estimation window
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,7 @@ class RiskAnalysis:
     var_reports: tuple[RiskReport, ...]
     monte_carlo: MonteCarloReport
     stress: StressReport
+    backtests: tuple[BacktestResult, ...]  # empty when the history is too short
     seed: int
     observations: int  # daily return observations used for estimation
 
@@ -87,7 +94,7 @@ def build_analysis(
 
     var_reports = tuple(
         analyze_risk(portfolio, prices, method=m, confidence=c, horizon=h)
-        for m in Method
+        for m in CORE_METHODS
         for c in CONFIDENCES
         for h in HORIZONS
     )
@@ -103,6 +110,20 @@ def build_analysis(
         AssetRow(s, classes[s], v, v / total, headline.standalone_var[s]) for s, v in values.items()
     )
     returns = prices[portfolio.symbols].pct_change().dropna()
+    backtests = (
+        tuple(
+            run_backtest(
+                portfolio,
+                prices,
+                method=m,
+                confidence=BACKTEST_CONFIDENCE,
+                window=BACKTEST_WINDOW,
+            )
+            for m in Method
+        )
+        if len(returns) >= BACKTEST_WINDOW + MIN_BACKTEST_DAYS
+        else ()
+    )
     return RiskAnalysis(
         portfolio=portfolio,
         as_of=prices.index[-1].date(),
@@ -120,6 +141,7 @@ def build_analysis(
             loss_threshold=loss_threshold,
         ),
         stress=run_stress(portfolio, latest, list(BUILTIN_SCENARIOS.values())),
+        backtests=backtests,
         seed=seed,
         observations=len(returns),
     )

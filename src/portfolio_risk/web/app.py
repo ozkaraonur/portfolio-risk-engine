@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from portfolio_risk.catalog import CATEGORIES, entries_for, synthetic_profiles
 from portfolio_risk.data import SyntheticProvider
 from portfolio_risk.reporting import RiskAnalysis, build_analysis, render_html, render_markdown
-from portfolio_risk.risk import Method
+from portfolio_risk.risk import CORE_METHODS, Method
 from portfolio_risk.web.builder import (
     COL_AMOUNT,
     COL_BROKER,
@@ -109,7 +109,7 @@ def _show_results(a: RiskAnalysis, confidence: float, horizon: int) -> None:
                     "CVaR": r.cvar,
                     "Çeşitlendirme faydası": r.diversification_ratio,
                 }
-                for m in Method
+                for m in CORE_METHODS
                 for r in [a.var_report(m, confidence, horizon)]
             ]
         ),
@@ -143,6 +143,34 @@ def _show_results(a: RiskAnalysis, confidence: float, horizon: int) -> None:
     with right:
         st.markdown("**Korelasyon Isı Haritası**")
         st.dataframe(a.correlation.style.format("{:.2f}").map(_heat))
+
+    if a.backtests:
+        first = a.backtests[0]
+        st.markdown(
+            f"**Model Doğrulama** (VaR geriye dönük test, %{first.confidence * 100:.0f}, "
+            f"{first.n_obs} gün)"
+        )
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Yöntem": r.method.value,
+                        "İhlal": r.n_violations,
+                        "Beklenen": r.expected_violations,
+                        "Kupiec p": r.kupiec.p_value,
+                        "Bağımsızlık p": r.independence.p_value,
+                        "Basel bölgesi": r.zone.value,
+                    }
+                    for r in a.backtests
+                ]
+            ),
+            hide_index=True,
+            column_config={
+                "Beklenen": st.column_config.NumberColumn(format="%.1f"),
+                "Kupiec p": st.column_config.NumberColumn(format="%.3f"),
+                "Bağımsızlık p": st.column_config.NumberColumn(format="%.3f"),
+            },
+        )
 
     st.markdown("**Monte Carlo** (1 yıl)")
     mc = a.monte_carlo

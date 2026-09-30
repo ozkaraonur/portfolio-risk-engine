@@ -3,20 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 
 import pandas as pd
 
 from portfolio_risk.models import Portfolio
-from portfolio_risk.risk.covariance import covariance_matrix
-from portfolio_risk.risk.var import historical_var_cvar, parametric_var_cvar
+from portfolio_risk.risk.estimators import Method, estimate_var_cvar
 
 MIN_OBS = 20
-
-
-class Method(StrEnum):
-    PARAMETRIC = "parametric"
-    HISTORICAL = "historical"
 
 
 @dataclass(frozen=True)
@@ -61,18 +54,11 @@ def analyze_risk(
     latest = {str(k): float(v) for k, v in prices.iloc[-1].items()}
     exposures = pd.Series(portfolio.market_values(latest), dtype=float)
 
-    if method is Method.PARAMETRIC:
-        cov = covariance_matrix(returns)
-
-        def measure(e: pd.Series[float]) -> tuple[float, float]:
-            return parametric_var_cvar(e, cov, confidence, horizon)
-    else:
-
-        def measure(e: pd.Series[float]) -> tuple[float, float]:
-            return historical_var_cvar(e, returns, confidence, horizon)
-
-    var, cvar = measure(exposures)
-    standalone = {s: measure(exposures[[s]])[0] for s in exposures.index}
+    var, cvar = estimate_var_cvar(method, exposures, returns, confidence, horizon)
+    standalone = {
+        s: estimate_var_cvar(method, exposures[[s]], returns, confidence, horizon)[0]
+        for s in exposures.index
+    }
     return RiskReport(
         method=method,
         confidence=confidence,
