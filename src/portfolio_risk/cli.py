@@ -32,6 +32,13 @@ from portfolio_risk.data.cache import DEFAULT_TTL_HOURS, default_cache_dir
 from portfolio_risk.importers import ImportFormatError, build_portfolio
 from portfolio_risk.models import Asset, AssetClass, Portfolio
 from portfolio_risk.reporting import build_analysis, render_dashboard, render_html, render_markdown
+from portfolio_risk.reporting.history import (
+    default_db_path,
+    load_history,
+    record,
+    snapshot_of,
+)
+from portfolio_risk.reporting.limits import check_limits, load_limits
 from portfolio_risk.risk import (
     BUILTIN_SCENARIOS,
     CORE_METHODS,
@@ -429,6 +436,84 @@ def optimize(
 
 
 @app.command()
+def check(
+    portfolio_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    limits_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    record_run: Annotated[
+        bool, typer.Option("--record", help="Append the result to the history database.")
+    ] = False,
+    db: Annotated[Path | None, typer.Option(help="History database (default: cache dir).")] = None,
+    simulations: Annotated[int, typer.Option("--simulations", "-n", min=100)] = 5_000,
+    seed: Annotated[int, typer.Option(help="Seed for simulation and synthetic prices.")] = 42,
+    provider: Annotated[ProviderName, typer.Option(help="Price source.")] = ProviderName.SYNTHETIC,
+    history_days: Annotated[int, typer.Option(min=60, help="Calendar days of history.")] = 730,
+) -> None:
+    """Check the portfolio against risk limits; exits with code 2 if any limit is breached."""
+    try:
+        portfolio = load_portfolio(portfolio_file)
+        limits = load_limits(limits_file)
+        portfolio, prices = fetch_prices(portfolio, provider, seed, history_days)
+        analysis = build_analysis(portfolio, prices, simulations=simulations, seed=seed)
+    except (ValidationError, DataUnavailableError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    checks = check_limits(analysis, limits)
+    if not checks:
+        typer.echo("No limits configured in the limits file.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"{portfolio.name} as of {analysis.as_of}")
+    typer.echo(f"{'LIMIT':<32}{'ACTUAL':>10}{'THRESHOLD':>12}  STATUS")
+    for c in checks:
+        relation = ">=" if c.is_minimum else "<="
+        status = "BREACH" if c.breached else "ok"
+        note = f" ({c.detail})" if c.detail else ""
+        typer.echo(
+            f"{c.name:<32}{c.actual:>10.2%}{relation + ' ' + format(c.limit, '.2%'):>12}"
+            f"  {status}{note}"
+        )
+    breaches = sum(c.breached for c in checks)
+    if record_run:
+        row = record(db or default_db_path(), snapshot_of(analysis, breaches=breaches))
+        typer.echo(f"Recorded snapshot #{row}.")
+    if breaches:
+        typer.echo(f"{breaches} limit(s) breached.", err=True)
+        raise typer.Exit(code=2)
+    typer.echo("All limits respected.")
+
+
+@app.command()
+def history(
+    portfolio_name: Annotated[
+        str | None, typer.Option("--portfolio", help="Only this portfolio name.")
+    ] = None,
+    limit: Annotated[int, typer.Option(min=1, max=1000, help="Rows to show.")] = 20,
+    db: Annotated[Path | None, typer.Option(help="History database (default: cache dir).")] = None,
+) -> None:
+    """Show recorded risk snapshots, oldest first, with the change in VaR between runs."""
+    rows = load_history(db or default_db_path(), portfolio_name, limit)
+    if not rows:
+        typer.echo("No snapshots recorded yet (use `pre report --record` or `pre check --record`).")
+        return
+    rows.reverse()
+    typer.echo(
+        f"{'RECORDED (UTC)':<18}{'PORTFOLIO':<14}{'VALUE':>13}{'VaR 10d 99%':>13}{'VaR %':>8}"
+        f"{'CHG':>8}  {'TOP RISK':<14}{'BREACH':>6}"
+    )
+    previous: dict[str, float] = {}
+    for r in rows:
+        prior = previous.get(r.portfolio)
+        change = "" if prior is None or prior == 0 else f"{r.var / prior - 1.0:+.1%}"
+        previous[r.portfolio] = r.var
+        top = f"{r.top_symbol} {r.top_risk_share:.0%}" if r.top_symbol else "-"
+        breach = "-" if r.breaches is None else str(r.breaches)
+        typer.echo(
+            f"{r.recorded_at:%Y-%m-%d %H:%M}   {r.portfolio:<14}{r.total_value:>13,.2f}"
+            f"{r.var:>13,.2f}{r.var_pct:>8.1%}{change:>8}  {top:<14}{breach:>6}"
+        )
+
+
+@app.command()
 def simulate(
     portfolio_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     simulations: Annotated[
@@ -610,6 +695,10 @@ def report(
         int, typer.Option(min=60, help="Calendar days of history used to estimate risk.")
     ] = 730,
     quiet: Annotated[bool, typer.Option(help="Skip the terminal dashboard.")] = False,
+    record_run: Annotated[
+        bool, typer.Option("--record", help="Append the headline figures to the history database.")
+    ] = False,
+    db: Annotated[Path | None, typer.Option(help="History database (default: cache dir).")] = None,
 ) -> None:
     """Run the full analysis: terminal dashboard plus optional HTML / Markdown reports."""
     try:
@@ -629,6 +718,9 @@ def report(
 
     if not quiet:
         render_dashboard(analysis, Console())
+    if record_run:
+        row = record(db or default_db_path(), snapshot_of(analysis))
+        typer.echo(f"Recorded snapshot #{row} for '{portfolio.name}'.")
     for path, content in ((html, render_html), (markdown, render_markdown)):
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)

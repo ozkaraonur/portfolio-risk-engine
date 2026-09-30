@@ -4,11 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "portfolio-risk-engine"
-version = "0.1.0"
-description = "Multi-broker portfolio risk and stress-testing engine"
+version = "0.2.0"
+description = "Multi-broker portfolio risk and stress-testing engine: VaR/CVaR, backtests, Monte Carlo, stress tests"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
+authors = [{ name = "Onur Ozkara" }]
+keywords = ["risk", "var", "cvar", "portfolio", "monte-carlo", "stress-test", "backtesting"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.6,<3",
     "numpy>=1.26",
@@ -19,6 +32,13 @@ dependencies = [
     "rich>=13.7",
     "streamlit>=1.35",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.5", "mypy>=1.10", "pandas-stubs>=2.2", "scipy-stubs>=1.12"]
+
+[project.urls]
+Homepage = "https://github.com/ozkaraonur/portfolio-risk-engine"
+Issues = "https://github.com/ozkaraonur/portfolio-risk-engine/issues"
 
 [project.scripts]
 pre = "portfolio_risk.cli:app"

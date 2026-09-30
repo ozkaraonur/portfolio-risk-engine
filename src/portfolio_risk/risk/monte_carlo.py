@@ -20,6 +20,8 @@ from portfolio_risk.risk.covariance import CovMethod, estimate_covariance
 from portfolio_risk.risk.linalg import FloatArray, cholesky_factor
 from portfolio_risk.risk.report import MIN_OBS
 
+CHUNK_PATHS = 10_000  # paths simulated at a time; bounds memory for very large runs
+
 
 def simulate_returns(
     cov: FloatArray,
@@ -117,27 +119,48 @@ def summarize_paths(
     confidences: tuple[float, ...] = (0.95, 0.99),
     loss_threshold: float = 0.3,
 ) -> MonteCarloReport:
+    if float(paths[0, 0]) <= 0:  # checked before max_drawdowns divides by the running peak
+        raise ValueError("Portfolio has no value to simulate.")
+    return _summarize(
+        float(paths[0, 0]),
+        paths[:, -1],
+        max_drawdowns(paths),
+        paths.min(axis=1),
+        paths.shape[1] - 1,
+        confidences,
+        loss_threshold,
+    )
+
+
+def _summarize(
+    initial: float,
+    final: FloatArray,
+    drawdowns: FloatArray,
+    path_min: FloatArray,
+    days: int,
+    confidences: tuple[float, ...],
+    loss_threshold: float,
+) -> MonteCarloReport:
+    """Report from per-path statistics, so paths need not all be held in memory at once."""
     if not 0.0 < loss_threshold <= 1.0:
         raise ValueError("loss_threshold must be in (0, 1].")
     if any(not 0.5 < c < 1.0 for c in confidences):
         raise ValueError("confidence levels must be in (0.5, 1).")
-    initial = float(paths[0, 0])
     if initial <= 0:
         raise ValueError("Portfolio has no value to simulate.")
-    final = paths[:, -1]
     losses = initial - final
     stats = {c: _var_cvar(losses, c) for c in confidences}
     barrier = initial * (1.0 - loss_threshold)
     return MonteCarloReport(
-        n_simulations=paths.shape[0],
-        days=paths.shape[1] - 1,
+        n_simulations=final.shape[0],
+        days=days,
         initial_value=initial,
         final_values=final,
-        max_drawdowns=max_drawdowns(paths),
+        max_drawdowns=drawdowns,
         var={c: v for c, (v, _) in stats.items()},
         cvar={c: t for c, (_, t) in stats.items()},
         loss_threshold=loss_threshold,
-        prob_ruin=float((paths.min(axis=1) <= barrier).mean()),
+        prob_ruin=float((path_min <= barrier).mean()),
         prob_loss_at_end=float((final <= barrier).mean()),
     )
 
@@ -169,14 +192,23 @@ def run_monte_carlo(
     exposures = np.array([values[s] for s in returns.columns], dtype=np.float64)
     cov = estimate_covariance(returns, cov_method).to_numpy(dtype=np.float64)
     mean = returns.mean().to_numpy(dtype=np.float64) if use_drift else np.zeros(len(exposures))
-    paths = simulate_paths(
-        exposures,
-        portfolio.total_cash,
-        cov,
-        mean,
-        n_simulations,
+    rng = np.random.default_rng(seed)
+    initial = float(exposures.sum() + portfolio.total_cash)
+    finals: list[FloatArray] = []
+    drawdowns: list[FloatArray] = []
+    minima: list[FloatArray] = []
+    for start in range(0, n_simulations, CHUNK_PATHS):
+        n = min(CHUNK_PATHS, n_simulations - start)
+        paths = simulate_paths(exposures, portfolio.total_cash, cov, mean, n, days, rng, df=df)
+        finals.append(paths[:, -1])
+        drawdowns.append(max_drawdowns(paths))
+        minima.append(paths.min(axis=1))
+    return _summarize(
+        initial,
+        np.concatenate(finals),
+        np.concatenate(drawdowns),
+        np.concatenate(minima),
         days,
-        np.random.default_rng(seed),
-        df=df,
+        confidences,
+        loss_threshold,
     )
-    return summarize_paths(paths, confidences=confidences, loss_threshold=loss_threshold)

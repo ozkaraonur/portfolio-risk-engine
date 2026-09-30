@@ -131,6 +131,8 @@ No internet is needed: the default provider generates reproducible synthetic pri
 | `pre simulate <file> -n 10000 -t 252 --seed 42 [--df 5] [--cov-method ewma]` | Monte Carlo VaR / CVaR, percentiles, drawdowns, ruin probability |
 | `pre stress <file> [--scenario gfc-2008] [--custom "equity=-0.15,crypto=-0.30"] [--market-shock -0.10]` | Scenario P&L per asset, worst case |
 | `pre report <file> --html report.html --markdown report.md` | Everything at once: dashboard plus reports |
+| `pre check <file> <limits.json> [--record]` | Compare the portfolio with risk limits; prints each limit and **exits with code 2 on any breach** (usable in cron / CI) |
+| `pre history [--portfolio NAME]` | Recorded runs over time: value, headline VaR, change since the previous run, top risk contributor, breaches |
 | `pre web` | Launch the Streamlit web panel |
 
 ```bash
@@ -138,6 +140,22 @@ pre stress examples/portfolio.json --custom "equity=-0.15,tag:tech=-0.30,BTC=-0.
 pre stress examples/portfolio.json --market-shock -0.10 --benchmark SPY --provider stooq
 python examples/run_demo.py          # offline end-to-end demo -> ./output
 ```
+
+### Risk limits and history
+
+`examples/limits.json` shows every supported limit; only the ones present are checked:
+
+```json
+{"max_var_pct": 0.12, "max_asset_weight": 0.5, "max_risk_share": 0.6,
+ "min_cash_ratio": 0.05, "max_ruin_probability": 0.05}
+```
+
+`max_var_pct` is the headline parametric 10-day 99% VaR as a fraction of portfolio value;
+`max_risk_share` caps one asset's share of that VaR (see risk attribution). `--record` on
+`pre check` or `pre report` appends the headline figures to a SQLite file
+(`~/.cache/portfolio-risk-engine/history.sqlite`, override with `--db`), and `pre history` shows how
+they moved between runs. Monte Carlo runs are simulated in batches of 10,000 paths, so memory stays
+bounded for very large `-n`; results are identical to a single batch for normal shocks.
 
 ### Web panel (Streamlit)
 

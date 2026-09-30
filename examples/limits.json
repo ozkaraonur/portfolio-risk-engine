@@ -1,0 +1,7 @@
+{
+  "max_var_pct": 0.12,
+  "max_asset_weight": 0.5,
+  "max_risk_share": 0.6,
+  "min_cash_ratio": 0.05,
+  "max_ruin_probability": 0.05
+}
