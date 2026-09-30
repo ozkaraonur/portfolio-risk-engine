@@ -25,6 +25,13 @@ USD_PER_UNIT = {
     "CAD": 0.73,
     "AUD": 0.65,
     "TRY": 0.031,
+    "CNY": 0.138,
+    "INR": 0.012,
+    "BRL": 0.18,
+    "MXN": 0.055,
+    "SAR": 0.267,
+    "AED": 0.272,
+    "KRW": 0.00072,
 }
 SYNTHETIC_FX_VOL = 0.09
 SYNTHETIC_TRY_VOL = 0.18

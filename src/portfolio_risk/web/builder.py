@@ -21,7 +21,7 @@ COL_CLASS = "Sınıf"
 COL_TAGS = "Etiketler"
 COL_QTY = "Miktar / Adet"
 COL_BROKER = "Broker"
-COL_AMOUNT = "Tutar (USD)"
+COL_AMOUNT = "Tutar"  # internal key; the shown label carries the chosen currency
 POSITION_COLUMNS = [COL_DELETE, COL_CATEGORY, COL_SYMBOL, COL_NAME, COL_CLASS, COL_TAGS, COL_QTY]
 CASH_COLUMNS = [COL_BROKER, COL_AMOUNT]
 
@@ -33,7 +33,16 @@ SAMPLE_CANDIDATES = (
 
 
 class PortfolioInputError(ValueError):
-    """User-facing validation error for the portfolio tables."""
+    """User-facing validation error for the portfolio tables.
+
+    ``key`` and ``params`` name the translatable message (see ``web.i18n``); the plain text is
+    the Turkish default.
+    """
+
+    def __init__(self, message: str, key: str | None = None, **params: object) -> None:
+        super().__init__(message)
+        self.key = key
+        self.params = params
 
 
 def empty_positions() -> pd.DataFrame:
@@ -83,7 +92,7 @@ def _row(entry: CatalogEntry, quantity: float) -> dict[str, object]:
 def add_position(positions: pd.DataFrame, entry: CatalogEntry, quantity: float) -> pd.DataFrame:
     """Add ``quantity`` of ``entry``; an asset already in the table has its quantity increased."""
     if not quantity > 0:
-        raise PortfolioInputError("Miktar sıfırdan büyük olmalı.")
+        raise PortfolioInputError("Miktar sıfırdan büyük olmalı.", "err_qty_positive")
     frame = positions.copy()
     frame[COL_QTY] = frame[COL_QTY].astype(float)
     existing = frame[COL_SYMBOL] == entry.symbol
@@ -101,9 +110,15 @@ def remove_marked(positions: pd.DataFrame) -> pd.DataFrame:
 
 
 def frames_to_portfolio(
-    positions: pd.DataFrame, cash: pd.DataFrame, name: str = "web-portfolio"
+    positions: pd.DataFrame,
+    cash: pd.DataFrame,
+    name: str = "web-portfolio",
+    base_currency: str = "USD",
 ) -> Portfolio:
-    """Build a ``Portfolio`` from the tables; asset details always come from the catalog."""
+    """Build a ``Portfolio`` from the tables; asset details always come from the catalog.
+
+    Cash amounts are taken to be in ``base_currency``.
+    """
     built_positions: list[Position] = []
     for idx, row in enumerate(positions.to_dict("records"), start=1):
         symbol, qty = row.get(COL_SYMBOL), row.get(COL_QTY)
@@ -112,7 +127,9 @@ def frames_to_portfolio(
         try:
             entry = get_entry(str(symbol))
         except KeyError as exc:
-            raise PortfolioInputError(f"Pozisyon satırı {idx}: {exc.args[0]}") from exc
+            raise PortfolioInputError(
+                f"Pozisyon satırı {idx}: {exc.args[0]}", "err_row_unknown", idx=idx, symbol=symbol
+            ) from exc
         try:
             quantity = _to_float(qty)
             built_positions.append(
@@ -120,7 +137,10 @@ def frames_to_portfolio(
             )
         except (ValidationError, ValueError) as exc:
             raise PortfolioInputError(
-                f"Pozisyon satırı {idx} ({entry.symbol}): miktar sıfırdan büyük olmalı."
+                f"Pozisyon satırı {idx} ({entry.symbol}): miktar sıfırdan büyük olmalı.",
+                "err_row_qty",
+                idx=idx,
+                symbol=entry.symbol,
             ) from exc
 
     built_cash: list[CashBalance] = []
@@ -132,15 +152,24 @@ def frames_to_portfolio(
             broker = row.get(COL_BROKER)
             built_cash.append(
                 CashBalance(
-                    broker="Custom" if _blank(broker) else str(broker), amount=_to_float(amount)
+                    broker="Custom" if _blank(broker) else str(broker),
+                    amount=_to_float(amount),
+                    currency=base_currency,
                 )
             )
         except (ValidationError, ValueError) as exc:
-            raise PortfolioInputError(f"Nakit satırı {idx}: tutar negatif olamaz.") from exc
+            raise PortfolioInputError(
+                f"Nakit satırı {idx}: tutar negatif olamaz.", "err_cash_negative", idx=idx
+            ) from exc
 
     if not built_positions:
-        raise PortfolioInputError("En az bir pozisyon ekleyin.")
-    return Portfolio(name=name, positions=tuple(built_positions), cash=tuple(built_cash))
+        raise PortfolioInputError("En az bir pozisyon ekleyin.", "err_no_positions")
+    return Portfolio(
+        name=name,
+        base_currency=base_currency,
+        positions=tuple(built_positions),
+        cash=tuple(built_cash),
+    )
 
 
 def portfolio_to_frames(portfolio: Portfolio) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -150,7 +179,7 @@ def portfolio_to_frames(portfolio: Portfolio) -> tuple[pd.DataFrame, pd.DataFram
         try:
             entry = get_entry(symbol)
         except KeyError as exc:
-            raise PortfolioInputError(exc.args[0]) from exc
+            raise PortfolioInputError(exc.args[0], "err_sample_unknown", symbol=symbol) from exc
         frame = add_position(frame, entry, quantity)
     cash = pd.DataFrame(
         [{COL_BROKER: c.broker, COL_AMOUNT: c.amount} for c in portfolio.cash],

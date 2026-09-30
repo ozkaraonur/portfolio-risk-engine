@@ -168,6 +168,14 @@ pre web --port 9000 --no-browser
 docker run --rm -p 8501:8501 portfolio-risk web --host 0.0.0.0 --no-browser
 ```
 
+The sidebar starts with two dropdowns: **Language** (14 languages: English, 中文, हिन्दी, Español,
+Français, العربية, বাংলা, Português, Русский, اردو, Bahasa Indonesia, Deutsch, 日本語, Türkçe; Arabic and
+Urdu switch the page to right-to-left) and **Currency** (USD, EUR, GBP, TRY, JPY, CNY, INR, BRL, CHF,
+CAD, AUD, MXN, SAR, AED, KRW). The currency is the reporting currency: all assets are converted into
+it with the day's FX rates (see *Real data, cache and currencies*), and the cash amounts you enter
+are taken to be in it. The translations cover the panel only, they are a starting point that
+deserves a native speaker's review, and the downloadable reports remain in English.
+
 Add positions by picking a **category** (ABD Hisseleri, BIST, Kripto, Emtia), then an **asset by name**
 (e.g. `THYAO - Türk Hava Yolları`, `SOL - Solana`) and entering only the quantity. Symbol, asset class,
 tags (`tech`, `aviation`, `crypto`, ...) and broker are linked automatically from the built-in
