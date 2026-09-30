@@ -100,6 +100,7 @@ No internet is needed: the default provider generates reproducible synthetic pri
 | --- | --- |
 | `pre summary <file>` | Latest valuation and weights |
 | `pre risk <file> --confidence 0.99 --horizon 10` | Parametric and historical VaR / CVaR, diversification, correlations |
+| `pre backtest <file> --confidence 0.99 --window 250` | Rolling one-day VaR backtest: violations, Kupiec / Christoffersen tests, Basel zone |
 | `pre simulate <file> -n 10000 -t 252 --seed 42` | Monte Carlo VaR / CVaR, percentiles, drawdowns, ruin probability |
 | `pre stress <file> [--scenario gfc-2008] [--custom "equity=-0.15,crypto=-0.30"] [--market-shock -0.10]` | Scenario P&L per asset, worst case |
 | `pre report <file> --html report.html --markdown report.md` | Everything at once: dashboard plus reports |
@@ -264,6 +265,22 @@ horizon VaR/CVaR, terminal percentiles, the distribution of maximum drawdown, an
 ruin probability** (chance a path *touches* the loss threshold at any time, always ≥ the probability of
 ending below it).
 
+### VaR backtesting
+
+`pre backtest` checks whether the VaR models are honest. For every test day the one-day VaR is
+estimated from the trailing `window` returns only and compared with the realised P&L of today's
+exposures (a hypothetical backtest, so trading is excluded). A *violation* is a day whose loss
+exceeds the forecast.
+
+- **Kupiec POF**: is the violation rate equal to `1 - confidence`? (likelihood ratio, chi-square 1 d.o.f.)
+- **Christoffersen independence**: do violations cluster? A first-order Markov chain is compared
+  with a constant rate. The joint **conditional coverage** test adds both statistics (2 d.o.f.).
+- **Basel traffic light**: green / yellow / red from the binomial tail of the violation count
+  (0-4 / 5-9 / 10+ violations for 250 days at 99%).
+
+Synthetic prices are Gaussian, so both models usually pass on them; the tests are meant to expose
+fat tails and volatility clustering in real data.
+
 ### Stress testing
 
 Instantaneous shocks `sᵢ` applied to current values: `P&Lᵢ = Vᵢ · sᵢ`; cash is unshocked.
@@ -283,7 +300,7 @@ with cash at zero.
 
 - Reports are model outputs, not forecasts or investment advice.
 - Single-currency valuation (no FX); long-only positions.
-- Parametric VaR ignores fat tails and skew; historical VaR needs a representative sample.
+- Parametric VaR assumes zero-mean normal returns (no fat tails or skew); the backtest can flag this; historical VaR needs a representative sample.
 - Synthetic data is for testing and demos. Its volatilities and correlations are configurable
   defaults, not market estimates.
 - The Stooq provider relies on a public endpoint and is not exercised by the test suite.

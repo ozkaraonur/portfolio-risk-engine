@@ -43,6 +43,19 @@ def test_risk_rejects_bad_confidence() -> None:
     assert result.exit_code != 0
 
 
+def test_backtest_command() -> None:
+    result = runner.invoke(app, ["backtest", str(EXAMPLE), "--seed", "1", "--window", "120"])
+    assert result.exit_code == 0, result.output
+    for token in ("parametric", "historical", "VIOLATIONS", "KUPIEC", "ZONE", "99.0%"):
+        assert token in result.output
+
+
+def test_backtest_needs_enough_history() -> None:
+    result = runner.invoke(app, ["backtest", str(EXAMPLE), "--days", "200"])
+    assert result.exit_code == 1
+    assert "Error" in result.output
+
+
 def test_simulate_command() -> None:
     result = runner.invoke(app, ["simulate", str(EXAMPLE), "-n", "500", "-t", "60", "--seed", "1"])
     assert result.exit_code == 0, result.output

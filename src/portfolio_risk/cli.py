@@ -34,6 +34,7 @@ from portfolio_risk.risk import (
     get_scenario,
     parse_custom_shocks,
     portfolio_beta,
+    run_backtest,
     run_monte_carlo,
     run_stress,
 )
@@ -139,6 +140,54 @@ def risk(
     corr = correlation_matrix(prices[portfolio.symbols].pct_change().dropna())
     typer.echo("\nCorrelation:")
     typer.echo(corr.round(2).to_string())
+
+
+@app.command()
+def backtest(
+    portfolio_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    confidence: Annotated[
+        float, typer.Option(min=0.9, max=0.999, help="e.g. 0.95 or 0.99.")
+    ] = 0.99,
+    window: Annotated[
+        int, typer.Option(min=20, help="Trailing observations used for each VaR forecast.")
+    ] = 250,
+    provider: Annotated[ProviderName, typer.Option(help="Price source.")] = ProviderName.SYNTHETIC,
+    seed: Annotated[int, typer.Option(help="Seed for the synthetic provider.")] = 42,
+    days: Annotated[int, typer.Option(min=120, help="History length in calendar days.")] = 1460,
+) -> None:
+    """Backtest one-day VaR: violations, Kupiec / Christoffersen tests, Basel traffic light."""
+    try:
+        portfolio = load_portfolio(portfolio_file)
+        end = date.today()
+        prices = make_provider(provider, seed).get_prices(
+            portfolio.assets, end - timedelta(days=days), end
+        )
+        results = [
+            run_backtest(portfolio, prices, method=m, confidence=confidence, window=window)
+            for m in Method
+        ]
+    except (ValidationError, DataUnavailableError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    first = results[0]
+    typer.echo(
+        f"{portfolio.name}: {confidence:.1%} one-day VaR, {first.n_obs} test days "
+        f"({first.dates[0].date()} to {first.dates[-1].date()}), window {window}"
+    )
+    typer.echo(
+        f"{'METHOD':<12}{'VIOLATIONS':>11}{'EXPECTED':>10}{'RATE':>8}"
+        f"{'KUPIEC p':>10}{'INDEP. p':>10}{'COND. p':>9}{'ZONE':>8}"
+    )
+    for r in results:
+        typer.echo(
+            f"{r.method.value:<12}{r.n_violations:>11}{r.expected_violations:>10.1f}"
+            f"{r.violation_rate:>8.2%}{r.kupiec.p_value:>10.3f}{r.independence.p_value:>10.3f}"
+            f"{r.conditional_coverage.p_value:>9.3f}{r.zone.value:>8}"
+        )
+    for r in results:
+        if r.conditional_coverage.rejects():
+            typer.echo(f"WARNING: {r.method.value} VaR is rejected at the 5% level.")
 
 
 @app.command()
