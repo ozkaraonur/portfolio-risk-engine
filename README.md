@@ -174,7 +174,13 @@ Français, العربية, বাংলা, Português, Русский, اردو
 Urdu switch the page to right-to-left) and **Currency** (USD, EUR, GBP, TRY, JPY, CNY, INR, BRL, CHF,
 CAD, AUD, MXN, SAR, AED, KRW). The currency is the reporting currency: all assets are converted into
 it with the day's FX rates (see *Real data, cache and currencies*), and the cash amounts you enter
-are taken to be in it. The translations cover the panel only, they are a starting point that
+are taken to be in it. Changing the currency converts the cash table at the day's rate and
+**recomputes the whole report at once** (no need to press the button again). Every amount is shown in
+full with its currency code (`4.493.342,32 EUR`), never abbreviated, and separators follow the chosen
+language: Turkish, German, Spanish, Portuguese and Indonesian use `1.234,56`; English, Chinese,
+Japanese, Hindi, Arabic, Bengali and Urdu use `1,234.56`; French and Russian use a space
+(`1 234,56`). Percentages follow suit (`%12,3` in Turkish). Adjust `NUMBER_STYLE` in
+`web/numfmt.py` to change a language. The translations cover the panel only, they are a starting point that
 deserves a native speaker's review, and the downloadable reports remain in English.
 
 Add positions by picking a **category** (ABD Hisseleri, BIST, Kripto, Emtia), then an **asset by name**

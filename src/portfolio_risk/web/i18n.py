@@ -49,6 +49,7 @@ CURRENCIES: dict[str, str] = {
 }
 
 _EN: dict[str, str] = {
+    "currency_failed": "Could not change currency: {err}",
     "lang_label": "Language",
     "currency_label": "Currency",
     "params_header": "Analysis parameters",
@@ -143,6 +144,7 @@ _EN: dict[str, str] = {
 }
 
 _TR: dict[str, str] = {
+    "currency_failed": "Para birimi değiştirilemedi: {err}",
     "lang_label": "Dil",
     "currency_label": "Para birimi",
     "params_header": "Analiz Parametreleri",
@@ -237,6 +239,7 @@ _TR: dict[str, str] = {
 }
 
 _ES: dict[str, str] = {
+    "currency_failed": "No se pudo cambiar la moneda: {err}",
     "lang_label": "Idioma",
     "currency_label": "Moneda",
     "params_header": "Parámetros del análisis",
@@ -331,6 +334,7 @@ _ES: dict[str, str] = {
 }
 
 _FR: dict[str, str] = {
+    "currency_failed": "Impossible de changer de devise : {err}",
     "lang_label": "Langue",
     "currency_label": "Devise",
     "params_header": "Paramètres de l'analyse",
@@ -425,6 +429,7 @@ _FR: dict[str, str] = {
 }
 
 _DE: dict[str, str] = {
+    "currency_failed": "Währung konnte nicht gewechselt werden: {err}",
     "lang_label": "Sprache",
     "currency_label": "Währung",
     "params_header": "Analyseparameter",
@@ -519,6 +524,7 @@ _DE: dict[str, str] = {
 }
 
 _PT: dict[str, str] = {
+    "currency_failed": "Não foi possível mudar a moeda: {err}",
     "lang_label": "Idioma",
     "currency_label": "Moeda",
     "params_header": "Parâmetros da análise",
@@ -613,6 +619,7 @@ _PT: dict[str, str] = {
 }
 
 _RU: dict[str, str] = {
+    "currency_failed": "Не удалось сменить валюту: {err}",
     "lang_label": "Язык",
     "currency_label": "Валюта",
     "params_header": "Параметры анализа",
@@ -707,6 +714,7 @@ _RU: dict[str, str] = {
 }
 
 _ID: dict[str, str] = {
+    "currency_failed": "Gagal mengganti mata uang: {err}",
     "lang_label": "Bahasa",
     "currency_label": "Mata uang",
     "params_header": "Parameter analisis",
@@ -801,6 +809,7 @@ _ID: dict[str, str] = {
 }
 
 _ZH: dict[str, str] = {
+    "currency_failed": "无法更改货币：{err}",
     "lang_label": "语言",
     "currency_label": "货币",
     "params_header": "分析参数",
@@ -895,6 +904,7 @@ _ZH: dict[str, str] = {
 }
 
 _JA: dict[str, str] = {
+    "currency_failed": "通貨を変更できませんでした：{err}",
     "lang_label": "言語",
     "currency_label": "通貨",
     "params_header": "分析パラメータ",
@@ -989,6 +999,7 @@ _JA: dict[str, str] = {
 }
 
 _HI: dict[str, str] = {
+    "currency_failed": "मुद्रा बदली नहीं जा सकी: {err}",
     "lang_label": "भाषा",
     "currency_label": "मुद्रा",
     "params_header": "विश्लेषण के पैरामीटर",
@@ -1083,6 +1094,7 @@ _HI: dict[str, str] = {
 }
 
 _BN: dict[str, str] = {
+    "currency_failed": "মুদ্রা পরিবর্তন করা যায়নি: {err}",
     "lang_label": "ভাষা",
     "currency_label": "মুদ্রা",
     "params_header": "বিশ্লেষণের প্যারামিটার",
@@ -1177,6 +1189,7 @@ _BN: dict[str, str] = {
 }
 
 _AR: dict[str, str] = {
+    "currency_failed": "تعذّر تغيير العملة: {err}",
     "lang_label": "اللغة",
     "currency_label": "العملة",
     "params_header": "معلمات التحليل",
@@ -1271,6 +1284,7 @@ _AR: dict[str, str] = {
 }
 
 _UR: dict[str, str] = {
+    "currency_failed": "کرنسی تبدیل نہیں ہو سکی: {err}",
     "lang_label": "زبان",
     "currency_label": "کرنسی",
     "params_header": "تجزیے کے پیرامیٹر",

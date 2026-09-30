@@ -23,6 +23,7 @@ from portfolio_risk.web.i18n import (
     TRANSLATIONS,
     translate,
 )
+from portfolio_risk.web.numfmt import format_number
 
 APP = Path(cli.__file__).parent / "web" / "app.py"
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
@@ -180,3 +181,101 @@ def test_cash_label_shows_the_chosen_currency() -> None:
     at.sidebar.selectbox(key="base_currency").set_value("GBP").run()
     assert not at.exception
     assert at.session_state["base_currency"] == "GBP"
+
+
+# --- currency change re-runs the analysis; units and number formats ---------------------------
+
+
+def _analysed(lang: str = "tr", currency: str = "USD") -> AppTest:
+    at = new_app()
+    at.sidebar.selectbox(key="language").set_value(lang).run()
+    at.sidebar.selectbox(key="base_currency").set_value(currency).run()
+    at.sidebar.button(key="load_sample").click().run()
+    at.sidebar.button(key="run_analysis").click().run()
+    assert not at.exception
+    assert not at.error
+    return at
+
+
+def test_changing_the_currency_recomputes_the_whole_report_without_the_button() -> None:
+    at = _analysed(currency="USD")
+    usd = at.session_state["analysis"]
+    html_before = at.session_state["report_html"]
+
+    at.sidebar.selectbox(key="base_currency").set_value("EUR").run()  # no button press
+    assert not at.exception
+    assert not at.error
+    eur = at.session_state["analysis"]
+    rate = USD_PER_UNIT["USD"] / USD_PER_UNIT["EUR"]
+    assert eur.portfolio.base_currency == "EUR"
+    assert eur.total_value == pytest.approx(usd.total_value * rate, rel=1e-6)
+    assert eur.cash == pytest.approx(usd.cash * rate, rel=1e-6)  # the cash table was converted too
+    assert at.session_state["report_html"] != html_before
+    assert "EUR" in at.session_state["report_html"]
+
+    at.sidebar.selectbox(key="base_currency").set_value("TRY").run()
+    assert at.session_state["analysis"].portfolio.base_currency == "TRY"
+    assert at.session_state["analysis"].total_value == pytest.approx(
+        usd.total_value * USD_PER_UNIT["USD"] / USD_PER_UNIT["TRY"], rel=1e-6
+    )
+
+
+def test_changing_the_currency_before_any_analysis_does_not_run_one() -> None:
+    at = new_app()
+    at.sidebar.selectbox(key="base_currency").set_value("EUR").run()
+    assert not at.exception
+    assert not at.error
+    assert "analysis" not in at.session_state
+
+
+def test_round_trip_through_another_currency_restores_the_cash() -> None:
+    at = _analysed(currency="USD")
+    cash_usd = at.session_state["analysis"].cash
+    at.sidebar.selectbox(key="base_currency").set_value("JPY").run()
+    at.sidebar.selectbox(key="base_currency").set_value("USD").run()
+    assert at.session_state["analysis"].cash == pytest.approx(cash_usd, rel=1e-9)
+
+
+def _metric(at: AppTest, label: str) -> str:
+    return next(str(m.value) for m in at.metric if m.label == label)
+
+
+def test_metrics_show_the_full_amount_with_currency_in_the_language_format() -> None:
+    tr = _analysed("tr", "EUR")
+    value = tr.session_state["analysis"].total_value
+    shown = _metric(tr, "Toplam Portföy Değeri")
+    assert shown == f"{format_number(value, 'tr')} EUR"  # e.g. 34.500,12 EUR
+    assert shown.endswith(" EUR")
+    assert "." in shown.split(",")[0]  # Turkish thousands separator
+
+    en = _analysed("en", "EUR")
+    assert _metric(en, "Total portfolio value") == f"{format_number(value, 'en')} EUR"
+    assert "…" not in shown
+    var_metric = next(m for m in en.metric if "VaR" in m.label)
+    assert str(var_metric.value).endswith(" EUR")  # VaR carries its unit too
+    assert "EUR" in str(var_metric.delta)
+
+
+def test_tables_carry_units_and_locale_separators() -> None:
+    at = _analysed("de", "GBP")
+    frames = [df.value for df in at.dataframe]
+    money_cells = [
+        str(v)
+        for frame in frames
+        for col in frame.columns
+        for v in frame[col]
+        if str(v).endswith(" GBP")
+    ]
+    assert money_cells, "value columns should include the currency"
+    assert all("," in cell for cell in money_cells)  # German decimal comma
+    assert any("%" in str(v) for frame in frames for col in frame.columns for v in frame[col])
+
+
+def test_large_values_are_not_truncated_by_css() -> None:
+    at = _analysed("en", "KRW")
+    css = " ".join(m.value for m in at.markdown if "stMetricValue" in m.value)
+    assert "text-overflow: clip" in css
+    assert "white-space: normal" in css
+    assert format_number(at.session_state["analysis"].total_value, "en") in _metric(
+        at, "Total portfolio value"
+    )

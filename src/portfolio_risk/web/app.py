@@ -58,6 +58,7 @@ from portfolio_risk.web.i18n import (
     RTL_LANGUAGES,
     translate,
 )
+from portfolio_risk.web.numfmt import format_money, format_number, format_percent
 
 SEED = 42
 HISTORY_DAYS = 730
@@ -91,6 +92,7 @@ def _init_state() -> None:
     st.session_state.setdefault("editor_version", 0)
     st.session_state.setdefault("language", DEFAULT_LANGUAGE)
     st.session_state.setdefault("base_currency", DEFAULT_CURRENCY)
+    st.session_state.setdefault("cash_currency", DEFAULT_CURRENCY)  # currency of the cash table
 
 
 def _reset_editors() -> None:
@@ -99,18 +101,51 @@ def _reset_editors() -> None:
 
 def _load_sample() -> None:
     try:
-        positions, cash = portfolio_to_frames(load_sample_portfolio())
+        sample = load_sample_portfolio()
+        positions, cash = portfolio_to_frames(sample)
+        base = str(st.session_state.get("base_currency", sample.base_currency))
+        if base != sample.base_currency:  # the sample's cash is in its own currency
+            source = str(st.session_state.get("data_source", SOURCE_SYNTHETIC))
+            cash[COL_AMOUNT] = cash[COL_AMOUNT].astype(float) * _fx_rate(
+                sample.base_currency, base, source
+            )
     except FileNotFoundError:
         st.session_state["sample_error"] = ("err_sample_missing", {})
         return
-    except PortfolioInputError as exc:
+    except PortfolioInputError as exc:  # before ValueError, which it subclasses
         st.session_state["sample_error"] = (exc.key or "", exc.params)
         return
-    except ValidationError as exc:
+    except (DataUnavailableError, ValueError) as exc:
         st.session_state["sample_error"] = ("", {"raw": str(exc)})
         return
-    st.session_state.update(positions=positions, cash=cash)
+    st.session_state.update(positions=positions, cash=cash, cash_currency=base)
     st.session_state.pop("sample_error", None)
+    _reset_editors()
+
+
+def _fx_rate(old: str, new: str, source: str) -> float:
+    """Units of ``new`` per unit of ``old`` today, from the selected data source."""
+    _, fx = _sources(source)
+    end = date.today()
+    return float(fx.get_rates([old], new, end - timedelta(days=30), end)[old].iloc[-1])
+
+
+def _on_currency_change() -> None:
+    """Re-express the cash table in the new currency and ask ``main`` to redo the analysis."""
+    new = str(st.session_state["base_currency"])
+    old = str(st.session_state.get("cash_currency", new))
+    if new == old:
+        return
+    try:
+        rate = _fx_rate(old, new, str(st.session_state.get("data_source", SOURCE_SYNTHETIC)))
+    except (DataUnavailableError, ValueError) as exc:
+        st.session_state["base_currency"] = old  # keep the old currency: nothing was converted
+        st.session_state["currency_error"] = str(exc)
+        return
+    frame = st.session_state.get("cash_latest", st.session_state["cash"]).copy()
+    frame[COL_AMOUNT] = frame[COL_AMOUNT].astype(float) * rate
+    st.session_state.update(cash=frame, cash_currency=new, auto_rerun=True)
+    st.session_state.pop("currency_error", None)
     _reset_editors()
 
 
@@ -140,29 +175,49 @@ def _run_analysis(
     st.session_state["report_md"] = render_markdown(analysis)
 
 
-def _pct(label: str) -> ColumnConfig:
-    return st.column_config.NumberColumn(label, format="percent")
+def _right(label: str) -> ColumnConfig:
+    """Text column for pre-formatted numbers (locale separators, currency), right-aligned."""
+    return st.column_config.TextColumn(label, alignment="right")
 
 
-def _num(label: str, fmt: str = "%.2f") -> ColumnConfig:
-    return st.column_config.NumberColumn(label, format=fmt)
+METRIC_CSS = """
+<style>
+[data-testid="stMetricValue"], [data-testid="stMetricValue"] * {
+    white-space: normal !important; overflow: visible !important;
+    text-overflow: clip !important; overflow-wrap: anywhere;
+}
+[data-testid="stMetricValue"] {font-size: 1.6rem; line-height: 1.25;}
+</style>
+"""
 
 
 def _show_results(a: RiskAnalysis, confidence: float, horizon: int) -> None:
+    lang = str(st.session_state.get("language", DEFAULT_LANGUAGE))
     ccy = a.portfolio.base_currency
+
+    def money(value: float, decimals: int = 2) -> str:
+        return format_money(value, ccy, lang, decimals)
+
+    def num(value: float, decimals: int = 2) -> str:
+        return format_number(value, lang, decimals)
+
+    def pct(fraction: float, decimals: int = 1) -> str:
+        return format_percent(fraction, lang, decimals)
+
     par = a.var_report(Method.PARAMETRIC, confidence, horizon)
     top = a.top_risk_asset
     conf = f"{confidence * 100:.0f}"
 
+    st.markdown(METRIC_CSS, unsafe_allow_html=True)
     st.subheader(_t("summary_header"))
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric(_t("total_value"), f"{a.total_value:,.2f} {ccy}")
-    c2.metric(_t("cash_ratio"), f"{a.cash_ratio:.1%}")
+    c1, c2, c3, c4 = st.columns([3, 2, 2, 3])
+    c1.metric(_t("total_value"), money(a.total_value))
+    c2.metric(_t("cash_ratio"), pct(a.cash_ratio))
     c3.metric(_t("top_risk"), top.symbol if top else "-")
     c4.metric(
         _t("var_metric", h=horizon, c=conf),
-        f"{par.var:,.2f}",
-        f"CVaR {par.cvar:,.2f}",
+        money(par.var),
+        f"CVaR {money(par.cvar)}",
         delta_color="off",
     )
 
@@ -178,16 +233,20 @@ def _show_results(a: RiskAnalysis, confidence: float, horizon: int) -> None:
             [
                 {
                     col_method: m.value,
-                    col_var: r.var,
-                    col_cvar: r.cvar,
-                    col_div: r.diversification_ratio,
+                    col_var: money(r.var),
+                    col_cvar: money(r.cvar),
+                    col_div: pct(r.diversification_ratio),
                 }
                 for m in CORE_METHODS
                 for r in [a.var_report(m, confidence, horizon)]
             ]
         ),
         hide_index=True,
-        column_config={col_var: _num(col_var), col_cvar: _num(col_cvar), col_div: _pct(col_div)},
+        column_config={
+            col_var: _right(col_var),
+            col_cvar: _right(col_cvar),
+            col_div: _right(col_div),
+        },
     )
 
     left, right = st.columns(2)
@@ -203,8 +262,8 @@ def _show_results(a: RiskAnalysis, confidence: float, horizon: int) -> None:
             {
                 col_symbol: x.symbol,
                 col_class: x.asset_class,
-                col_value: x.value,
-                col_weight: x.weight,
+                col_value: money(x.value),
+                col_weight: pct(x.weight),
             }
             for x in a.assets
         ]
@@ -213,18 +272,22 @@ def _show_results(a: RiskAnalysis, confidence: float, horizon: int) -> None:
                 {
                     col_symbol: "CASH",
                     col_class: "cash",
-                    col_value: a.cash,
-                    col_weight: a.cash_ratio,
+                    col_value: money(a.cash),
+                    col_weight: pct(a.cash_ratio),
                 }
             )
         st.dataframe(
             pd.DataFrame(rows),
             hide_index=True,
-            column_config={col_value: _num(col_value), col_weight: _pct(col_weight)},
+            column_config={col_value: _right(col_value), col_weight: _right(col_weight)},
         )
     with right:
         st.markdown(f"**{_t('corr_title')}**")
-        st.dataframe(a.correlation.style.format("{:.2f}").map(_heat))
+        st.dataframe(
+            a.correlation.style.format(
+                lambda v: num(v, 2) if isinstance(v, int | float) else str(v)
+            ).map(_heat)
+        )
 
     rc = a.contributions
     st.markdown(f"**{_t('contrib_title', h=rc.horizon, c=f'{rc.confidence * 100:.0f}')}**")
@@ -239,21 +302,16 @@ def _show_results(a: RiskAnalysis, confidence: float, horizon: int) -> None:
             [
                 {
                     col_symbol: str(sym),
-                    col_pos: rc.exposures[sym],
-                    col_vc: rc.component_var[sym],
-                    col_sh: rc.var_share[sym],
-                    col_cc: rc.component_cvar[sym],
+                    col_pos: money(rc.exposures[sym]),
+                    col_vc: money(rc.component_var[sym]),
+                    col_sh: pct(rc.var_share[sym]),
+                    col_cc: money(rc.component_cvar[sym]),
                 }
                 for sym in rc.exposures.index
             ]
         ),
         hide_index=True,
-        column_config={
-            col_pos: _num(col_pos),
-            col_vc: _num(col_vc),
-            col_sh: _pct(col_sh),
-            col_cc: _num(col_cc),
-        },
+        column_config={c: _right(c) for c in (col_pos, col_vc, col_sh, col_cc)},
     )
 
     if a.optimizations:
@@ -270,25 +328,19 @@ def _show_results(a: RiskAnalysis, confidence: float, horizon: int) -> None:
                 [
                     {
                         col_pf: o.objective,
-                        **o.weights,
-                        col_er: o.expected_return,
-                        col_vol: o.volatility,
-                        col_var: o.var,
-                        col_chg: o.var / base - 1.0 if o.objective != "current" else 0.0,
+                        **{sym: pct(w) for sym, w in o.weights.items()},
+                        col_er: pct(o.expected_return),
+                        col_vol: pct(o.volatility),
+                        col_var: money(o.var),
+                        col_chg: pct(o.var / base - 1.0 if o.objective != "current" else 0.0),
                     }
                     for o in a.optimizations
                 ]
             ),
             hide_index=True,
             column_config={
-                **{
-                    sym: st.column_config.NumberColumn(format="percent")
-                    for sym in a.optimizations[0].weights
-                },
-                col_er: _pct(col_er),
-                col_vol: _pct(col_vol),
-                col_var: _num(col_var),
-                col_chg: _pct(col_chg),
+                c: _right(c)
+                for c in (*a.optimizations[0].weights, col_er, col_vol, col_var, col_chg)
             },
         )
         st.caption(_t("opt_caption"))
@@ -308,30 +360,26 @@ def _show_results(a: RiskAnalysis, confidence: float, horizon: int) -> None:
                 [
                     {
                         col_method: r.method.value,
-                        col_viol: r.n_violations,
-                        col_exp: r.expected_violations,
-                        col_kup: r.kupiec.p_value,
-                        col_ind: r.independence.p_value,
+                        col_viol: str(r.n_violations),
+                        col_exp: num(r.expected_violations, 1),
+                        col_kup: num(r.kupiec.p_value, 3),
+                        col_ind: num(r.independence.p_value, 3),
                         col_bas: r.zone.value,
                     }
                     for r in a.backtests
                 ]
             ),
             hide_index=True,
-            column_config={
-                col_exp: _num(col_exp, "%.1f"),
-                col_kup: _num(col_kup, "%.3f"),
-                col_ind: _num(col_ind, "%.3f"),
-            },
+            column_config={c: _right(c) for c in (col_viol, col_exp, col_kup, col_ind)},
         )
 
     st.markdown(f"**{_t('mc_title')}**")
     mc = a.monte_carlo
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric(_t("p5"), f"{mc.final_percentile(5):,.0f}")
-    m2.metric(_t("median"), f"{mc.median_final:,.0f}")
-    m3.metric(_t("p95"), f"{mc.final_percentile(95):,.0f}")
-    m4.metric(_t("ruin", p=f"{mc.loss_threshold * 100:.0f}"), f"{mc.prob_ruin:.2%}")
+    m1.metric(_t("p5"), money(mc.final_percentile(5), 0))
+    m2.metric(_t("median"), money(mc.median_final, 0))
+    m3.metric(_t("p95"), money(mc.final_percentile(95), 0))
+    m4.metric(_t("ruin", p=f"{mc.loss_threshold * 100:.0f}"), pct(mc.prob_ruin, 2))
 
     st.markdown(f"**{_t('stress_title')}**")
     col_scn, col_pnl, col_lp, col_st = (
@@ -345,25 +393,25 @@ def _show_results(a: RiskAnalysis, confidence: float, horizon: int) -> None:
             [
                 {
                     col_scn: r.scenario.name,
-                    col_pnl: r.total_pnl,
-                    col_lp: r.pnl_pct,
-                    col_st: r.stressed_value,
+                    col_pnl: money(r.total_pnl),
+                    col_lp: pct(r.pnl_pct),
+                    col_st: money(r.stressed_value),
                 }
                 for r in a.stress.results
             ]
         ),
         hide_index=True,
-        column_config={col_pnl: _num(col_pnl), col_lp: _pct(col_lp), col_st: _num(col_st)},
+        column_config={c: _right(c) for c in (col_pnl, col_lp, col_st)},
     )
     worst = a.stress.worst_case
     st.warning(
         _t(
             "worst_case",
             name=worst.scenario.name,
-            loss=f"{-worst.total_pnl:,.2f}",
+            loss=num(-worst.total_pnl),
             ccy=ccy,
-            pct=f"{-worst.pnl_pct:.1%}",
-            rest=f"{worst.stressed_value:,.2f}",
+            pct=pct(-worst.pnl_pct),
+            rest=num(worst.stressed_value),
         )
     )
 
@@ -393,7 +441,10 @@ def main() -> None:
             list(CURRENCIES),
             format_func=CURRENCIES.__getitem__,
             key="base_currency",
+            on_change=_on_currency_change,
         )
+        if "currency_error" in st.session_state:
+            st.error(_t("currency_failed", err=st.session_state["currency_error"]))
         base_currency = str(st.session_state["base_currency"])
 
         st.header(_t("params_header"))
@@ -444,6 +495,7 @@ def main() -> None:
                 ),
             },
         )
+        st.session_state["cash_latest"] = cash  # what the table shows now (for a currency change)
         run = st.button(_t("run_button"), key="run_analysis", type="primary")
 
     st.title("Portfolio Risk Engine")
@@ -511,7 +563,8 @@ def main() -> None:
         _reset_editors()
         st.rerun()
 
-    if run:
+    auto = bool(st.session_state.pop("auto_rerun", False)) and "analysis" in st.session_state
+    if run or auto:  # a currency change re-runs the analysis without pressing the button
         _run_analysis(positions, cash, simulations, source, base_currency)
 
     analysis = st.session_state.get("analysis")
