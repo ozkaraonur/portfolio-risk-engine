@@ -192,6 +192,8 @@ def test_app_sample_to_report_flow() -> None:
     assert "Toplam Portföy Değeri" in labels
     assert "Nakit Oranı" in labels
     assert any("Model Doğrulama" in m.value for m in at.markdown)
+    assert any("Risk Katkısı" in m.value for m in at.markdown)
+    assert any("Önerilen Ağırlıklar" in m.value for m in at.markdown)
     assert "Model Validation (VaR Backtest)" in at.session_state["report_html"]
     # No provider choice is exposed any more.
     assert all("Fiyat Verisi" not in s.label for s in at.sidebar.selectbox)

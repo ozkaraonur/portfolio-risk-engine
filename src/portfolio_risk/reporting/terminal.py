@@ -91,6 +91,36 @@ def render_dashboard(a: RiskAnalysis, console: Console) -> None:
                 )
     console.print(Group(alloc, corr, var))
 
+    contrib = _table(
+        "Risk attribution", "Symbol", "Exposure", "VaR contrib.", "Share", "CVaR contrib."
+    )
+    rc = a.contributions
+    for sym in rc.exposures.index:
+        contrib.add_row(
+            str(sym),
+            f"{rc.exposures[sym]:,.2f}",
+            _signed(-rc.component_var[sym], f"{rc.component_var[sym]:,.2f}"),
+            f"{rc.var_share[sym]:.1%}",
+            f"{rc.component_cvar[sym]:,.2f}",
+        )
+    console.print(contrib)
+
+    if a.optimizations:
+        symbols = list(a.optimizations[0].weights)
+        opt = _table("Optimisation", "Allocation", *symbols, "Return", "Vol.", "VaR", "VaR chg.")
+        base = a.optimizations[0].var
+        for o in a.optimizations:
+            change = o.var / base - 1.0
+            opt.add_row(
+                o.objective,
+                *(f"{o.weights[s]:.1%}" for s in symbols),
+                f"{o.expected_return:.1%}",
+                f"{o.volatility:.1%}",
+                f"{o.var:,.2f}",
+                "" if o.objective == "current" else _signed(-change, f"{change:+.1%}"),
+            )
+        console.print(opt)
+
     if a.backtests:
         first = a.backtests[0]
         bt = _table(

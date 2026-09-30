@@ -23,13 +23,15 @@ and cash across brokers and answers the questions a risk committee asks:
 | --- | --- |
 | Multi-broker portfolios | Same asset at several brokers is aggregated; per-broker cash; equities, crypto, commodities |
 | Risk metrics | Parametric and historical-simulation VaR / CVaR at 95% / 99%, 1-day / 10-day horizons; fat-tail models (EWMA, Student-t, Cornish-Fisher, filtered historical simulation) via `--all-methods` |
+| Risk attribution | Component / marginal VaR and CVaR per position (Euler allocation; hedges show up as negative contributions) |
+| Optimisation | Long-only min-variance, risk-parity and max-Sharpe weights over the risky assets, efficient frontier, self-financing trades to reach them |
 | Model validation | Rolling VaR backtest with Kupiec / Christoffersen tests, Basel traffic-light zones and violation charts in the reports |
 | Monte Carlo | Cholesky-correlated multivariate GBM (normal or Student-t shocks, sample / EWMA / Ledoit-Wolf covariance), terminal percentiles, drawdown distribution, first-passage ruin probability |
 | Stress testing | Built-in historical shocks, custom class / tag / symbol shocks, beta-driven market shocks |
 | Web panel | Streamlit UI: portfolio builder, one-click analysis, HTML report download |
 | Reporting | Rich terminal dashboard, zero-dependency HTML report (inline CSS/SVG), Markdown summary |
 | Data | Offline seeded GBM provider (tests, demos) and Stooq public-data provider (no API key) |
-| Engineering | Pydantic v2 models, `mypy --strict`, ruff, 90+ deterministic tests, Docker, CI on 3.11 / 3.12 |
+| Engineering | Pydantic v2 models, `mypy --strict`, ruff, 230+ deterministic tests, Docker, CI on 3.11 / 3.12 |
 
 ## Architecture
 
@@ -61,11 +63,13 @@ flowchart LR
 src/portfolio_risk/
   models/      Asset, Position, CashBalance, Portfolio (immutable pydantic v2 models)
   data/        PriceProvider ABC, SyntheticProvider (GBM), StooqProvider
-  risk/        covariance, var, tail_models, estimators, backtest, coverage, linalg,
+  risk/        covariance, var, tail_models, estimators, attribution, optimize, backtest,
+               coverage, linalg,
                monte_carlo, scenarios, stress, report
   reporting/   analysis (orchestration), terminal, html, markdown
   web/         Streamlit panel (app.py) and UI-independent table -> Portfolio builder
-  cli.py       Typer CLI: summary | risk | backtest | simulate | stress | report | web
+  cli.py       Typer CLI: summary | risk | attribute | optimize | backtest | simulate |
+               stress | report | web
 ```
 
 ## Quick start
@@ -102,6 +106,8 @@ No internet is needed: the default provider generates reproducible synthetic pri
 | --- | --- |
 | `pre summary <file>` | Latest valuation and weights |
 | `pre risk <file> --confidence 0.99 --horizon 10 [--all-methods]` | Parametric and historical VaR / CVaR, diversification, correlations; all six models with `--all-methods` |
+| `pre attribute <file> [--method historical]` | Component VaR / CVaR, share and marginal VaR per position |
+| `pre optimize <file> [--objective risk-parity] [--max-weight 0.5] [--frontier 10]` | Optimal long-only weights, VaR change and the trades to get there |
 | `pre backtest <file> --confidence 0.99 --window 250` | Rolling one-day VaR backtest: violations, Kupiec / Christoffersen tests, Basel zone for all six models |
 | `pre simulate <file> -n 10000 -t 252 --seed 42 [--df 5] [--cov-method ewma]` | Monte Carlo VaR / CVaR, percentiles, drawdowns, ruin probability |
 | `pre stress <file> [--scenario gfc-2008] [--custom "equity=-0.15,crypto=-0.30"] [--market-shock -0.10]` | Scenario P&L per asset, worst case |
@@ -186,6 +192,23 @@ VaR / CVaR
 | historical |     10d |   95% | 1,215.23 | 1,438.04 |        37.4% |
 | historical |     10d |   99% | 1,567.66 | 1,750.89 |        39.5% |
 +-------------------------------------------------------------------+
+Risk attribution
++-----------------------------------------------------------+
+| Symbol |  Exposure | VaR contrib. | Share | CVaR contrib. |
+|--------+-----------+--------------+-------+---------------|
+| AAPL   | 12,051.17 |     1,349.73 | 71.0% |      1,546.34 |
+| BTC    |  1,707.13 |       184.43 |  9.7% |        211.29 |
+| GOLD   | 11,644.62 |       366.63 | 19.3% |        420.04 |
++-----------------------------------------------------------+
+Optimisation
++-----------------------------------------------------------------------------+
+| Allocation  |  AAPL |   BTC |   GOLD | Return |  Vol. |      VaR | VaR chg. |
+|-------------+-------+-------+--------+--------+-------+----------+----------|
+| current     | 47.4% |  6.7% |  45.8% |   4.7% | 16.1% | 1,900.79 |          |
+| min-varian� | 19.4% |  2.7% |  77.9% |  11.7% | 13.1% | 1,541.42 |   -18.9% |
+| risk-parity | 28.8% | 13.5% |  57.7% |   3.3% | 15.2% | 1,789.76 |    -5.8% |
+| max-sharpe  |  0.0% |  0.0% | 100.0% |  16.6% | 14.6% | 1,722.76 |    -9.4% |
++-----------------------------------------------------------------------------+
 VaR backtest (99% one-day, 532 days)
 +-----------------------------------------------------------------------+
 | Method         | Violations | Expected | Kupiec p | Indep. p |   Zone |
@@ -295,6 +318,42 @@ horizon VaR/CVaR, terminal percentiles, the distribution of maximum drawdown, an
 ruin probability** (chance a path *touches* the loss threshold at any time, always ≥ the probability of
 ending below it).
 
+### Risk attribution
+
+For the parametric model the portfolio VaR is `z · sqrt(wᵀΣw)`, which is homogeneous of degree one
+in the exposures `w`. Euler's theorem then splits it exactly:
+
+```
+component VaRᵢ  = z · wᵢ (Σw)ᵢ / sqrt(wᵀΣw)            Σᵢ component VaRᵢ = VaR
+marginal VaRᵢ   = component VaRᵢ / wᵢ                    (VaR added per currency unit of exposure)
+```
+
+CVaR is split the same way. A position that is negatively correlated with the rest has a negative
+component: it hedges. The historical version splits CVaR by averaging each position's P&L over
+the loss-tail scenarios; VaR, which is a single scenario and too noisy to split, is allocated in
+proportion to those CVaR components.
+
+### Portfolio optimisation
+
+`pre optimize` works on the risky assets only (cash is left alone), long-only and fully invested,
+on annualised inputs (`252 · Σ`, `252 · mean`).
+
+| Objective | Problem |
+| --- | --- |
+| `min-variance` | minimise `wᵀΣw` (SLSQP), optional per-asset cap `--max-weight` |
+| `risk-parity` | equal risk contributions, from the convex problem `min 0.5 wᵀΣw - (1/n) Σ ln wᵢ` (rescaled to sum to one); caps do not apply |
+| `max-sharpe` | maximise `(μᵀw - r_f) / sqrt(wᵀΣw)` from several starts; undefined if no asset has a positive excess return |
+
+`--frontier N` prints minimum-volatility portfolios between the global minimum-variance point and
+the best reachable return. Trades are `target weight × invested amount − current value`, so they
+sum to zero. The reports compare the current allocation with each objective by 10-day 99%
+parametric VaR.
+
+Expected returns are annualised sample means. Over a couple of years they are dominated by noise
+(on the synthetic sample max-Sharpe simply concentrates in the best-performing asset), so the
+return-based objectives and the frontier are indicative; min-variance and risk-parity use only the
+covariance and are far more stable.
+
 ### VaR backtesting
 
 `pre backtest` checks whether the VaR models are honest. For every test day the one-day VaR is
@@ -350,7 +409,7 @@ with cash at zero.
 
 ## Assumptions and limitations
 
-- Reports are model outputs, not forecasts or investment advice.
+- Reports are model outputs, not forecasts or investment advice; the optimiser ignores costs, taxes and liquidity.
 - Single-currency valuation (no FX); long-only positions.
 - Parametric VaR assumes zero-mean normal returns (no fat tails or skew); the backtest can flag this and the fat-tail models are alternatives, not fixes: Student-t and Cornish-Fisher use moments estimated from one window; historical VaR needs a representative sample.
 - Synthetic data is for testing and demos. Its volatilities and correlations are configurable

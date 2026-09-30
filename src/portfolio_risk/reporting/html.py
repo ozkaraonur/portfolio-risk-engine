@@ -187,6 +187,102 @@ def _backtest_section(a: RiskAnalysis) -> str:
 """
 
 
+def _attribution_section(a: RiskAnalysis) -> str:
+    c = a.contributions
+    rows = [
+        [
+            escape(str(sym)),
+            f"{c.exposures[sym]:,.2f}",
+            f'<span class="{_cls(-c.component_var[sym])}">{c.component_var[sym]:,.2f}</span>',
+            f'<span class="bar" style="width:{max(c.var_share[sym], 0) * 120:.0f}px"></span>'
+            f"{c.var_share[sym]:.1%}",
+            f"{c.marginal_var[sym] * 1000:,.2f}",
+            f"{c.component_cvar[sym]:,.2f}",
+        ]
+        for sym in c.exposures.index
+    ]
+    rows.append(
+        [
+            "<strong>Total</strong>",
+            f"{c.exposures.sum():,.2f}",
+            f"{c.var:,.2f}",
+            "100.0%",
+            "",
+            f"{c.cvar:,.2f}",
+        ]
+    )
+    table = _table(
+        [
+            "Symbol",
+            "Exposure",
+            "VaR contribution",
+            "Share",
+            "Marginal VaR / 1,000",
+            "CVaR contribution",
+        ],
+        rows,
+    )
+    return f"""<h2>Risk Attribution</h2>
+<p>Component {c.horizon}-day {c.confidence:.0%} VaR and CVaR (parametric, Euler allocation): the
+contributions add up to the portfolio figure. A negative contribution means the position
+hedges the rest of the portfolio.</p>
+{table}
+"""
+
+
+def _optimization_section(a: RiskAnalysis) -> str:
+    if not a.optimizations:
+        return ""
+    symbols = list(a.optimizations[0].weights)
+    base = a.optimizations[0].var
+    rows = []
+    for o in a.optimizations:
+        change = o.var / base - 1.0 if base else 0.0
+        rows.append(
+            [
+                escape(o.objective),
+                *(f"{o.weights[s]:.1%}" for s in symbols),
+                f"{o.expected_return:.1%}",
+                f"{o.volatility:.1%}",
+                f"{o.var:,.2f}",
+                ""
+                if o.objective == "current"
+                else f'<span class="{_cls(-change)}">{change:+.1%}</span>',
+            ]
+        )
+    table = _table(
+        [
+            "Allocation",
+            *map(escape, symbols),
+            "Exp. return",
+            "Volatility",
+            f"{HEADLINE_HORIZON}d VaR",
+            "VaR change",
+        ],
+        rows,
+    )
+    details = ""
+    for o in a.optimizations[1:]:
+        trade_rows = [
+            [
+                escape(s),
+                f'<span class="{_cls(t)}">{t:+,.2f}</span>',
+            ]
+            for s, t in o.trades.items()
+        ]
+        details += (
+            f"<details><summary>{escape(o.objective)}: trades to reach the weights</summary>"
+            f"{_table(['Symbol', 'Buy (+) / sell (-)'], trade_rows)}</details>"
+        )
+    return f"""<h2>Portfolio Optimisation</h2>
+<p>Long-only weights over the risky assets; cash is untouched and trades are self-financing.
+Expected returns are annualised sample means, so the return-driven max-Sharpe result is
+indicative only.</p>
+{table}
+{details}
+"""
+
+
 def render_html(a: RiskAnalysis) -> str:
     ccy = escape(a.portfolio.base_currency)
     mc = a.monte_carlo
@@ -343,6 +439,8 @@ observations &middot; seed {a.seed}</div>
 {var_table}
 
 {_backtest_section(a)}
+{_attribution_section(a)}
+{_optimization_section(a)}
 <h2>Monte Carlo ({mc.n_simulations:,} paths &times; {mc.days} days)</h2>
 {_histogram(mc)}
 <h3>Terminal portfolio value</h3>

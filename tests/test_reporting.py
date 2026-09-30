@@ -203,3 +203,47 @@ def test_backtest_is_skipped_when_history_is_short() -> None:
     assert analysis.backtests == ()
     assert "Model Validation" not in render_html(analysis)
     assert "Model Validation" not in render_markdown(analysis)
+
+
+def test_analysis_contains_attribution_that_adds_up(analysis: RiskAnalysis) -> None:
+    rc = analysis.contributions
+    assert (rc.confidence, rc.horizon) == (0.99, 10)
+    assert rc.var == pytest.approx(analysis.headline_var.var)
+    assert rc.cvar == pytest.approx(analysis.headline_var.cvar)
+    assert set(rc.exposures.index) == {a.symbol for a in analysis.assets}
+
+
+def test_analysis_optimizations_start_with_the_current_portfolio(analysis: RiskAnalysis) -> None:
+    rows = analysis.optimizations
+    assert rows[0].objective == "current"
+    assert rows[0].trades == pytest.approx(dict.fromkeys(rows[0].weights, 0.0), abs=1e-6)
+    assert {r.objective for r in rows} >= {"min-variance", "risk-parity"}
+    for row in rows:
+        assert sum(row.weights.values()) == pytest.approx(1.0)
+        assert sum(row.trades.values()) == pytest.approx(0.0, abs=1e-6)
+    min_var = next(r for r in rows if r.objective == "min-variance")
+    assert min_var.volatility <= rows[0].volatility + 1e-9
+    assert min_var.var <= rows[0].var + 1e-6
+
+
+def test_reports_render_attribution_and_optimisation(analysis: RiskAnalysis) -> None:
+    html = render_html(analysis)
+    for token in ("Risk Attribution", "Portfolio Optimisation", "min-variance", "trades to reach"):
+        assert token in html
+    md = render_markdown(analysis)
+    assert "## Risk Attribution" in md
+    assert "## Portfolio Optimisation" in md
+    buffer = io.StringIO()
+    render_dashboard(analysis, Console(file=buffer, width=120, color_system=None))
+    assert "Risk attribution" in buffer.getvalue()
+    assert "Optimisation" in buffer.getvalue()
+
+
+def test_single_asset_portfolio_has_attribution_but_no_optimisation() -> None:
+    pf = Portfolio(name="one", positions=(Position(asset=AAPL, quantity=10, broker="a"),))
+    prices = SyntheticProvider(seed=3).get_prices([AAPL], date(2022, 1, 1), date(2024, 1, 1))
+    analysis = build_analysis(pf, prices, simulations=200, mc_days=20, seed=1)
+    assert analysis.optimizations == ()
+    assert analysis.contributions.var_share["AAPL"] == pytest.approx(1.0)
+    assert "Portfolio Optimisation" not in render_html(analysis)
+    assert "Portfolio Optimisation" not in render_markdown(analysis)

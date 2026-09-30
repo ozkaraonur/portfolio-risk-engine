@@ -14,10 +14,17 @@ from portfolio_risk.risk import (
     BacktestResult,
     Method,
     MonteCarloReport,
+    Objective,
+    RiskContribution,
     RiskReport,
     StressReport,
     analyze_risk,
     correlation_matrix,
+    optimize_portfolio,
+    parametric_var_cvar,
+    portfolio_stats,
+    rebalance_trades,
+    risk_contributions,
     run_backtest,
     run_monte_carlo,
     run_stress,
@@ -42,6 +49,18 @@ class AssetRow:
 
 
 @dataclass(frozen=True)
+class OptimizationRow:
+    """A candidate allocation of the risky assets (cash is left untouched)."""
+
+    objective: str  # "current" or an ``Objective`` value
+    weights: dict[str, float]
+    expected_return: float  # annualised, from the sample mean (indicative only)
+    volatility: float  # annualised
+    var: float  # headline parametric VaR of the risky sleeve at these weights
+    trades: dict[str, float]  # currency to buy (+) / sell (-) to reach the weights
+
+
+@dataclass(frozen=True)
 class RiskAnalysis:
     portfolio: Portfolio
     as_of: date
@@ -53,6 +72,8 @@ class RiskAnalysis:
     monte_carlo: MonteCarloReport
     stress: StressReport
     backtests: tuple[BacktestResult, ...]  # empty when the history is too short
+    contributions: RiskContribution  # parametric, headline confidence / horizon
+    optimizations: tuple[OptimizationRow, ...]  # current first; empty with < 2 assets
     seed: int
     observations: int  # daily return observations used for estimation
 
@@ -74,6 +95,39 @@ class RiskAnalysis:
     @property
     def top_risk_asset(self) -> AssetRow | None:
         return max(self.assets, key=lambda a: a.standalone_var, default=None)
+
+
+def _optimizations(
+    values: dict[str, float], returns: pd.DataFrame, confidence: float, horizon: int
+) -> tuple[OptimizationRow, ...]:
+    """Current risky-asset weights plus every objective that can be solved."""
+    exposures = pd.Series(values, dtype=float)
+    invested = float(exposures.sum())
+    if len(exposures) < 2 or invested <= 0.0:
+        return ()
+    cov = returns[list(exposures.index)].cov()
+
+    def row(name: str, weights: pd.Series[float]) -> OptimizationRow:
+        ret, vol = portfolio_stats(weights, returns)
+        var, _ = parametric_var_cvar(weights * invested, cov, confidence, horizon)
+        trades = rebalance_trades(exposures, weights)
+        return OptimizationRow(
+            name,
+            {str(k): float(v) for k, v in weights.items()},
+            ret,
+            vol,
+            var,
+            {str(k): float(v) for k, v in trades.items()},
+        )
+
+    rows = [row("current", exposures / invested)]
+    for objective in Objective:
+        try:
+            allocation = optimize_portfolio(objective, returns[list(exposures.index)])
+        except ValueError:
+            continue  # e.g. max-Sharpe when no asset has a positive expected return
+        rows.append(row(objective.value, allocation.weights))
+    return tuple(rows)
 
 
 def build_analysis(
@@ -124,6 +178,7 @@ def build_analysis(
         if len(returns) >= BACKTEST_WINDOW + MIN_BACKTEST_DAYS
         else ()
     )
+    exposures = pd.Series(values, dtype=float)
     return RiskAnalysis(
         portfolio=portfolio,
         as_of=prices.index[-1].date(),
@@ -142,6 +197,13 @@ def build_analysis(
         ),
         stress=run_stress(portfolio, latest, list(BUILTIN_SCENARIOS.values())),
         backtests=backtests,
+        contributions=risk_contributions(
+            exposures,
+            returns,
+            confidence=HEADLINE_CONFIDENCE,
+            horizon=HEADLINE_HORIZON,
+        ),
+        optimizations=_optimizations(values, returns, HEADLINE_CONFIDENCE, HEADLINE_HORIZON),
         seed=seed,
         observations=len(returns),
     )

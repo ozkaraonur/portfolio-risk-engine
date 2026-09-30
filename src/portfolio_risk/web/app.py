@@ -144,6 +144,64 @@ def _show_results(a: RiskAnalysis, confidence: float, horizon: int) -> None:
         st.markdown("**Korelasyon Isı Haritası**")
         st.dataframe(a.correlation.style.format("{:.2f}").map(_heat))
 
+    rc = a.contributions
+    st.markdown(f"**Risk Katkısı** ({rc.horizon} gün, %{rc.confidence * 100:.0f} VaR)")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Sembol": str(sym),
+                    "Pozisyon": rc.exposures[sym],
+                    "VaR katkısı": rc.component_var[sym],
+                    "Pay": rc.var_share[sym],
+                    "CVaR katkısı": rc.component_cvar[sym],
+                }
+                for sym in rc.exposures.index
+            ]
+        ),
+        hide_index=True,
+        column_config={
+            "Pozisyon": st.column_config.NumberColumn(format="%.2f"),
+            "VaR katkısı": st.column_config.NumberColumn(format="%.2f"),
+            "Pay": st.column_config.NumberColumn(format="percent"),
+            "CVaR katkısı": st.column_config.NumberColumn(format="%.2f"),
+        },
+    )
+
+    if a.optimizations:
+        base = a.optimizations[0].var
+        st.markdown("**Önerilen Ağırlıklar** (yalnızca riskli varlıklar, nakit sabit)")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Portföy": o.objective,
+                        **o.weights,
+                        "Beklenen getiri": o.expected_return,
+                        "Volatilite": o.volatility,
+                        "VaR": o.var,
+                        "VaR değişimi": o.var / base - 1.0 if o.objective != "current" else 0.0,
+                    }
+                    for o in a.optimizations
+                ]
+            ),
+            hide_index=True,
+            column_config={
+                **{
+                    sym: st.column_config.NumberColumn(format="percent")
+                    for sym in a.optimizations[0].weights
+                },
+                "Beklenen getiri": st.column_config.NumberColumn(format="percent"),
+                "Volatilite": st.column_config.NumberColumn(format="percent"),
+                "VaR": st.column_config.NumberColumn(format="%.2f"),
+                "VaR değişimi": st.column_config.NumberColumn(format="percent"),
+            },
+        )
+        st.caption(
+            "Beklenen getiriler kısa geçmişten tahmin edilir; "
+            "max-sharpe sonucu yalnızca yol göstericidir."
+        )
+
     if a.backtests:
         first = a.backtests[0]
         st.markdown(

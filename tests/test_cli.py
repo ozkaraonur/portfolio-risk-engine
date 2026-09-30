@@ -129,3 +129,44 @@ def test_simulate_with_fat_tails_and_shrinkage() -> None:
 def test_simulate_rejects_df_at_or_below_two() -> None:
     result = runner.invoke(app, ["simulate", str(EXAMPLE), "--df", "2"])
     assert result.exit_code != 0
+
+
+def test_attribute_command() -> None:
+    result = runner.invoke(app, ["attribute", str(EXAMPLE), "--seed", "1"])
+    assert result.exit_code == 0, result.output
+    for token in ("VaR CONTRIB.", "SHARE", "MARGINAL/1000", "AAPL", "BTC", "GOLD"):
+        assert token in result.output
+    hist = runner.invoke(
+        app, ["attribute", str(EXAMPLE), "--seed", "1", "--method", "historical", "--horizon", "1"]
+    )
+    assert hist.exit_code == 0, hist.output
+    assert "historical" in hist.output
+
+
+def test_attribute_rejects_unsupported_method() -> None:
+    result = runner.invoke(app, ["attribute", str(EXAMPLE), "--method", "fhs"])
+    assert result.exit_code == 1
+    assert "parametric and historical" in result.output
+
+
+def test_optimize_command_lists_objectives_trades_and_frontier() -> None:
+    result = runner.invoke(
+        app, ["optimize", str(EXAMPLE), "--seed", "1", "--frontier", "3", "--max-weight", "0.7"]
+    )
+    assert result.exit_code == 0, result.output
+    for token in ("current", "min-variance", "risk-parity", "max-sharpe", "Trades for", "FRONTIER"):
+        assert token in result.output
+
+
+def test_optimize_single_objective_and_errors() -> None:
+    one = runner.invoke(
+        app, ["optimize", str(EXAMPLE), "--seed", "1", "--objective", "min-variance"]
+    )
+    assert one.exit_code == 0, one.output
+    assert "risk-parity" not in one.output
+    bad = runner.invoke(app, ["optimize", str(EXAMPLE), "--objective", "magic"])
+    assert bad.exit_code == 1
+    assert "unknown objective" in bad.output
+    infeasible = runner.invoke(app, ["optimize", str(EXAMPLE), "--max-weight", "0.2"])
+    assert infeasible.exit_code == 1
+    assert "infeasible" in infeasible.output

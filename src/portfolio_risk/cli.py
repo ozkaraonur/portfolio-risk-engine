@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
+import pandas as pd
 import typer
 from pydantic import ValidationError
 from rich.console import Console
@@ -28,14 +29,21 @@ from portfolio_risk.risk import (
     CORE_METHODS,
     CovMethod,
     Method,
+    Objective,
     Scenario,
     analyze_risk,
     beta_scenario,
     compute_betas,
     correlation_matrix,
+    efficient_frontier,
     get_scenario,
+    optimize_portfolio,
+    parametric_var_cvar,
     parse_custom_shocks,
     portfolio_beta,
+    portfolio_stats,
+    rebalance_trades,
+    risk_contributions,
     run_backtest,
     run_monte_carlo,
     run_stress,
@@ -193,6 +201,147 @@ def backtest(
     for r in results:
         if r.conditional_coverage.rejects():
             typer.echo(f"WARNING: {r.method.value} VaR is rejected at the 5% level.")
+
+
+@app.command()
+def attribute(
+    portfolio_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    confidence: Annotated[
+        float, typer.Option(min=0.9, max=0.999, help="e.g. 0.95 or 0.99.")
+    ] = 0.99,
+    horizon: Annotated[int, typer.Option(min=1, max=250, help="Horizon in trading days.")] = 10,
+    method: Annotated[
+        Method, typer.Option(help="parametric (Euler) or historical (loss tail).")
+    ] = Method.PARAMETRIC,
+    provider: Annotated[ProviderName, typer.Option(help="Price source.")] = ProviderName.SYNTHETIC,
+    seed: Annotated[int, typer.Option(help="Seed for the synthetic provider.")] = 42,
+    days: Annotated[int, typer.Option(min=60, help="History length in calendar days.")] = 730,
+) -> None:
+    """Risk attribution: each position's component VaR / CVaR and marginal VaR."""
+    try:
+        portfolio = load_portfolio(portfolio_file)
+        end = date.today()
+        prices = make_provider(provider, seed).get_prices(
+            portfolio.assets, end - timedelta(days=days), end
+        )
+        latest = {str(k): float(v) for k, v in prices.iloc[-1].items()}
+        exposures = pd.Series(portfolio.market_values(latest), dtype=float)
+        result = risk_contributions(
+            exposures,
+            prices[portfolio.symbols].pct_change().dropna(),
+            method=method,
+            confidence=confidence,
+            horizon=horizon,
+        )
+    except (ValidationError, DataUnavailableError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(
+        f"{portfolio.name}: {method.value} {confidence:.1%} {horizon}-day VaR "
+        f"{result.var:,.2f} {portfolio.base_currency}, CVaR {result.cvar:,.2f}"
+    )
+    typer.echo(
+        f"{'SYMBOL':<10}{'EXPOSURE':>13}{'VaR CONTRIB.':>14}{'SHARE':>8}"
+        f"{'MARGINAL/1000':>15}{'CVaR CONTRIB.':>15}"
+    )
+    for symbol in result.exposures.index:
+        typer.echo(
+            f"{symbol:<10}{result.exposures[symbol]:>13,.2f}{result.component_var[symbol]:>14,.2f}"
+            f"{result.var_share[symbol]:>8.1%}{result.marginal_var[symbol] * 1000:>15,.2f}"
+            f"{result.component_cvar[symbol]:>15,.2f}"
+        )
+    hedges = [str(s) for s in result.exposures.index if result.component_var[s] < 0]
+    if hedges:
+        typer.echo(f"Diversifying (negative contribution): {', '.join(hedges)}")
+
+
+@app.command()
+def optimize(
+    portfolio_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    objective: Annotated[
+        str, typer.Option(help="min-variance, risk-parity, max-sharpe or all.")
+    ] = "all",
+    max_weight: Annotated[
+        float, typer.Option(min=0.05, max=1.0, help="Cap per asset (not used by risk-parity).")
+    ] = 1.0,
+    risk_free: Annotated[float, typer.Option(help="Annual risk-free rate for max-sharpe.")] = 0.0,
+    frontier: Annotated[
+        int, typer.Option(min=0, max=100, help="Print this many efficient-frontier points.")
+    ] = 0,
+    confidence: Annotated[float, typer.Option(min=0.9, max=0.999)] = 0.99,
+    horizon: Annotated[int, typer.Option(min=1, max=250)] = 10,
+    provider: Annotated[ProviderName, typer.Option(help="Price source.")] = ProviderName.SYNTHETIC,
+    seed: Annotated[int, typer.Option(help="Seed for the synthetic provider.")] = 42,
+    days: Annotated[int, typer.Option(min=60, help="History length in calendar days.")] = 730,
+) -> None:
+    """Long-only optimal weights over the risky assets, with the trades to reach them."""
+    try:
+        objectives = list(Objective) if objective == "all" else [Objective(objective)]
+    except ValueError as exc:
+        typer.echo(f"Error: unknown objective '{objective}'.", err=True)
+        raise typer.Exit(code=1) from exc
+    try:
+        portfolio = load_portfolio(portfolio_file)
+        end = date.today()
+        prices = make_provider(provider, seed).get_prices(
+            portfolio.assets, end - timedelta(days=days), end
+        )
+        returns = prices[portfolio.symbols].pct_change().dropna()
+        latest = {str(k): float(v) for k, v in prices.iloc[-1].items()}
+        values = pd.Series(portfolio.market_values(latest), dtype=float)
+        invested = float(values.sum())
+        if invested <= 0.0:
+            raise ValueError("Portfolio has no risky assets to optimise.")
+        current = values / invested
+        cov = returns.cov()
+        candidates = {"current": current}
+        for obj in objectives:
+            candidates[obj.value] = optimize_portfolio(
+                obj, returns, max_weight=max_weight, risk_free=risk_free
+            ).weights
+        points = (
+            efficient_frontier(returns, points=frontier, max_weight=max_weight) if frontier else []
+        )
+    except (ValidationError, DataUnavailableError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    symbols = list(current.index)
+    typer.echo(
+        f"{portfolio.name}: risky assets {invested:,.2f} {portfolio.base_currency} "
+        f"(cash untouched); VaR is {confidence:.1%} {horizon}-day parametric"
+    )
+    typer.echo(
+        f"{'ALLOCATION':<14}"
+        + "".join(f"{s:>9}" for s in symbols)
+        + f"{'RETURN':>9}{'VOL':>8}{'VaR':>11}{'VaR CHG':>9}"
+    )
+    base_var = 0.0
+    for name, weights in candidates.items():
+        ret, vol = portfolio_stats(weights, returns)
+        var = parametric_var_cvar(weights * invested, cov, confidence, horizon)[0]
+        base_var = base_var or var
+        change = "" if name == "current" else f"{var / base_var - 1.0:+.1%}"
+        typer.echo(
+            f"{name:<14}"
+            + "".join(f"{weights[s]:>9.1%}" for s in symbols)
+            + f"{ret:>9.1%}{vol:>8.1%}{var:>11,.2f}{change:>9}"
+        )
+    for name, weights in list(candidates.items())[1:]:
+        typer.echo(f"\nTrades for {name}:")
+        for symbol, amount in rebalance_trades(values, weights).items():
+            typer.echo(f"  {symbol:<10}{amount:>+14,.2f}")
+    if points:
+        typer.echo(f"\n{'FRONTIER RETURN':<16}{'VOL':>8}" + "".join(f"{s:>9}" for s in symbols))
+        for point in points:
+            typer.echo(
+                f"{point.expected_return:<16.1%}{point.volatility:>8.1%}"
+                + "".join(f"{point.weights[s]:>9.1%}" for s in symbols)
+            )
+    typer.echo(
+        "Expected returns are sample means: treat max-sharpe and the frontier as indicative."
+    )
 
 
 @app.command()

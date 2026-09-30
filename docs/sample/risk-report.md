@@ -43,6 +43,23 @@
 | historical | 10d | 95% | 1,215.23 | 1,438.04 | 37.4% |
 | historical | 10d | 99% | 1,567.66 | 1,750.89 | 39.5% |
 
+## Risk Attribution
+
+| Symbol | Exposure | VaR contribution | Share | CVaR contribution |
+| --- | ---: | ---: | ---: | ---: |
+| AAPL | 12,051.17 | 1,349.73 | 71.0% | 1,546.34 |
+| BTC | 1,707.13 | 184.43 | 9.7% | 211.29 |
+| GOLD | 11,644.62 | 366.63 | 19.3% | 420.04 |
+
+## Portfolio Optimisation
+
+| Allocation | AAPL | BTC | GOLD | Exp. return | Volatility | 10d VaR | VaR change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| current | 47.4% | 6.7% | 45.8% | 4.7% | 16.1% | 1,900.79 |  |
+| min-variance | 19.4% | 2.7% | 77.9% | 11.7% | 13.1% | 1,541.42 | -18.9% |
+| risk-parity | 28.8% | 13.5% | 57.7% | 3.3% | 15.2% | 1,789.76 | -5.8% |
+| max-sharpe | 0.0% | 0.0% | 100.0% | 16.6% | 14.6% | 1,722.76 | -9.4% |
+
 ## Model Validation (VaR Backtest)
 
 One-day 99% VaR, 532 test days, 250-day estimation window.

@@ -88,6 +88,46 @@ def render_markdown(a: RiskAnalysis) -> str:
                 )
     out += _table(["Method", "Horizon", "Conf.", "VaR", "CVaR", "Div. benefit"], rows, 3)
 
+    out += ["## Risk Attribution", ""]
+    rc = a.contributions
+    out += _table(
+        ["Symbol", "Exposure", "VaR contribution", "Share", "CVaR contribution"],
+        [
+            [
+                str(sym),
+                f"{rc.exposures[sym]:,.2f}",
+                f"{rc.component_var[sym]:,.2f}",
+                f"{rc.var_share[sym]:.1%}",
+                f"{rc.component_cvar[sym]:,.2f}",
+            ]
+            for sym in rc.exposures.index
+        ],
+    )
+    if a.optimizations:
+        symbols = list(a.optimizations[0].weights)
+        base = a.optimizations[0].var
+        out += ["## Portfolio Optimisation", ""]
+        out += _table(
+            [
+                "Allocation",
+                *symbols,
+                "Exp. return",
+                "Volatility",
+                f"{HEADLINE_HORIZON}d VaR",
+                "VaR change",
+            ],
+            [
+                [
+                    o.objective,
+                    *(f"{o.weights[s]:.1%}" for s in symbols),
+                    f"{o.expected_return:.1%}",
+                    f"{o.volatility:.1%}",
+                    f"{o.var:,.2f}",
+                    "" if o.objective == "current" else f"{o.var / base - 1.0:+.1%}",
+                ]
+                for o in a.optimizations
+            ],
+        )
     if a.backtests:
         first = a.backtests[0]
         out += [
