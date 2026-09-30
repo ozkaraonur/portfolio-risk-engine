@@ -55,3 +55,19 @@ def test_invalid_inputs() -> None:
         SyntheticProvider().get_prices([AAPL], END, START)
     with pytest.raises(ValueError, match="correlation"):
         SyntheticProvider(correlation=1.0)
+
+
+def test_history_length_does_not_change_latest_price_or_shared_returns() -> None:
+    asset = Asset(symbol="AAPL", asset_class=AssetClass.EQUITY)
+    end = date(2024, 6, 28)
+    long = SyntheticProvider(seed=5).get_prices([asset], date(2022, 1, 3), end)["AAPL"]
+    short = SyntheticProvider(seed=5).get_prices([asset], date(2024, 1, 2), end)["AAPL"]
+    assert long.iloc[-1] == pytest.approx(short.iloc[-1])
+    assert long.loc[short.index].to_numpy() == pytest.approx(short.to_numpy())
+    assert long.iloc[-1] == pytest.approx(100.0)  # class default price at the end date
+
+
+def test_synthetic_start_before_the_epoch_is_rejected() -> None:
+    asset = Asset(symbol="AAPL", asset_class=AssetClass.EQUITY)
+    with pytest.raises(ValueError, match="starts at"):
+        SyntheticProvider().get_prices([asset], date(1999, 1, 1), date(2000, 6, 1))

@@ -5,8 +5,8 @@ Modular multi-broker portfolio risk and stress-testing engine (Python 3.11+).
 ## Layout
 - `src/portfolio_risk/models/` — pydantic v2 domain models (`Asset`, `Position`, `CashBalance`, `Portfolio`).
 - `src/portfolio_risk/data/` — price providers behind the `PriceProvider` ABC:
-  `SyntheticProvider` (seeded GBM, offline, used in tests) and `StooqProvider` (public CSV, network).
-  `cache.py` (`CachedProvider`, JSON per symbol, TTL) wraps any provider; `fx.py` (`FxProvider`, `SyntheticFx`, `StooqFx`, `convert_to_base`) expresses foreign-currency prices/cash in the base currency (the CLI does this in `fetch_prices`).
+  `SyntheticProvider` (seeded GBM, offline, used in tests) `YahooProvider` (public JSON, network; the real-data source, maps catalog BIST to `.IS`) and `StooqProvider` (blocked by a JS check, kept for tests/mirrors). Synthetic prices are date-indexed and anchored so the price on the end date equals the profile price (window length never changes the latest price).
+  `cache.py` (`CachedProvider`, JSON per symbol, TTL) wraps any provider; `fx.py` (`FxProvider`, `SyntheticFx`, `YahooFx`, `StooqFx`, `convert_to_base`) expresses foreign-currency prices/cash in the base currency (the CLI does this in `fetch_prices`).
 - `src/portfolio_risk/importers.py` — broker CSV -> `Portfolio` (`pre import`).
 - `src/portfolio_risk/risk/` — covariance/correlation, parametric + historical VaR/CVaR (`var.py`), `analyze_risk` report with diversification benefit (`report.py`). VaR/CVaR are positive loss amounts; cash adds value but no risk.
 - `src/portfolio_risk/risk/estimators.py` — `Method` enum (parametric, historical, ewma, student-t, cornish-fisher, fhs) and the `estimate_var_cvar` dispatcher; `tail_models.py` holds the P&L-based fat-tail models; `CORE_METHODS` (parametric, historical) are the ones in standard reports.
@@ -19,7 +19,7 @@ Modular multi-broker portfolio risk and stress-testing engine (Python 3.11+).
 - `src/portfolio_risk/catalog.py` — fixed asset universe (category, class, tags, broker, calibrated synthetic profile); the web panel selects from it and uses `SyntheticProvider(profiles=synthetic_profiles())` only.
 - `src/portfolio_risk/web/` — Streamlit panel: `builder.py` (pure table<->Portfolio logic, unit-tested), `app.py` (UI; tested with `streamlit.testing.v1.AppTest`). Launch via `pre web`.
 - `src/portfolio_risk/cli.py` — Typer CLI (`pre`, or `python -m portfolio_risk`).
-- `tests/` — pytest; **must never touch the network** (inject fakes into `StooqProvider`).
+- `tests/` — pytest; **must never touch the network** (inject fakes into `YahooProvider` / `StooqProvider`).
 
 ## Commands
 Use the project venv (`.venv`); install with `pip install -r requirements.txt && pip install -e .`.

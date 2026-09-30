@@ -106,4 +106,4 @@ class CachedProvider(PriceProvider):
             fetched = self._inner.get_prices([asset], start, end)[asset.symbol]
             self._write(asset, start, end, fetched)
             series.append(fetched)
-        return pd.concat(series, axis=1).sort_index().ffill().dropna()
+        return pd.concat(series, axis=1, sort=True).ffill().dropna()

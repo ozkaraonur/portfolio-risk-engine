@@ -8,13 +8,21 @@ import pandas as pd
 import streamlit as st
 from pydantic import ValidationError
 
-from portfolio_risk.catalog import BIST, CATALOG, CATEGORIES, entries_for, synthetic_profiles
+from portfolio_risk.catalog import (
+    CATEGORIES,
+    entries_for,
+    synthetic_profiles,
+)
 from portfolio_risk.data import (
     CachedProvider,
     DataUnavailableError,
+    FxProvider,
     PriceProvider,
-    StooqProvider,
+    SyntheticFx,
     SyntheticProvider,
+    YahooFx,
+    YahooProvider,
+    convert_to_base,
 )
 from portfolio_risk.reporting import RiskAnalysis, build_analysis, render_html, render_markdown
 from portfolio_risk.risk import CORE_METHODS, Method
@@ -42,22 +50,17 @@ from portfolio_risk.web.builder import (
 SEED = 42
 HISTORY_DAYS = 730
 SOURCE_SYNTHETIC = "synthetic"
-SOURCE_STOOQ = "stooq"
+SOURCE_YAHOO = "yahoo"
 SOURCE_LABELS = {
     SOURCE_SYNTHETIC: "Sentetik (çevrimdışı)",
-    SOURCE_STOOQ: "Gerçek piyasa verisi (Stooq)",
+    SOURCE_YAHOO: "Gerçek piyasa verisi (Yahoo Finance)",
 }
 
 
-def _provider(source: str, symbols: list[str]) -> PriceProvider:
-    if source == SOURCE_STOOQ:
-        unsupported = [s for s in symbols if s in CATALOG and CATALOG[s].category == BIST]
-        if unsupported:
-            raise ValueError(
-                f"BIST varlıkları için gerçek veri desteklenmiyor: {', '.join(unsupported)}."
-            )
-        return CachedProvider(StooqProvider(), namespace="stooq")
-    return SyntheticProvider(seed=SEED, profiles=synthetic_profiles())
+def _sources(source: str) -> tuple[PriceProvider, FxProvider]:
+    if source == SOURCE_YAHOO:
+        return CachedProvider(YahooProvider(), namespace="yahoo"), YahooFx()
+    return SyntheticProvider(seed=SEED, profiles=synthetic_profiles()), SyntheticFx(seed=SEED)
 
 
 def _init_state() -> None:
@@ -90,13 +93,13 @@ def _heat(value: object) -> str:
 def _run_analysis(
     positions: pd.DataFrame, cash: pd.DataFrame, simulations: int, source: str
 ) -> None:
-    """Prices come from the offline synthetic engine or, on request, from cached Stooq data."""
+    """Prices come from the offline synthetic engine or, on request, from cached Yahoo data."""
     try:
         portfolio = frames_to_portfolio(positions, cash)
-        end = date.today()
-        prices = _provider(source, portfolio.symbols).get_prices(
-            portfolio.assets, end - timedelta(days=HISTORY_DAYS), end
-        )
+        provider, fx = _sources(source)
+        end, start = date.today(), date.today() - timedelta(days=HISTORY_DAYS)
+        prices = provider.get_prices(portfolio.assets, start, end)
+        portfolio, prices = convert_to_base(portfolio, prices, fx, start, end)
         analysis = build_analysis(portfolio, prices, simulations=simulations, seed=SEED)
     except (PortfolioInputError, ValidationError, ValueError, DataUnavailableError) as exc:
         st.session_state.pop("analysis", None)
@@ -321,7 +324,7 @@ def main() -> None:
             format_func=SOURCE_LABELS.__getitem__,
             key="data_source",
         )
-        if source == SOURCE_STOOQ:
+        if source == SOURCE_YAHOO:
             st.caption("Fiyatlar internetten indirilir ve 12 saat diskte önbelleğe alınır.")
         st.markdown("**Nakit Bakiyesi**")
         cash = st.data_editor(
@@ -370,7 +373,7 @@ def main() -> None:
         key=f"positions_editor_{version}",
         num_rows="fixed",
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         disabled=[COL_CATEGORY, COL_SYMBOL, COL_NAME, COL_CLASS, COL_TAGS],
         column_config={
             COL_DELETE: st.column_config.CheckboxColumn(COL_DELETE, default=False),
@@ -418,7 +421,7 @@ def main() -> None:
         key="download_md",
     )
     with st.expander("Tam raporun canlı önizlemesi"):
-        st.components.v1.html(st.session_state["report_html"], height=900, scrolling=True)
+        st.iframe(st.session_state["report_html"], height=900)  # our own escaped HTML
 
 
 main()

@@ -102,7 +102,8 @@ def test_synthetic_prices_follow_catalog_profiles() -> None:
     prices = provider.get_prices(assets, START, END)
     rets = provider.get_returns(assets, START, END, log=True)
     assert (prices > 0).all().all()
-    assert prices.iloc[0].tolist() == pytest.approx([get_entry(s).price for s in symbols])
+    # The path is anchored at the end date: the latest price is the catalog price.
+    assert prices.iloc[-1].tolist() == pytest.approx([get_entry(s).price for s in symbols])
 
     vol = rets.std() * (252**0.5)
     for s in symbols:
@@ -133,4 +134,4 @@ def test_unknown_symbols_fall_back_to_class_defaults() -> None:
     prices = SyntheticProvider(profiles=synthetic_profiles()).get_prices(
         [custom], date(2024, 1, 1), date(2024, 6, 1)
     )
-    assert prices["ZZZ"].iloc[0] == 100.0  # class default start price
+    assert prices["ZZZ"].iloc[-1] == pytest.approx(100.0)  # class default price, at the end date

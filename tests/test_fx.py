@@ -21,11 +21,11 @@ SAP = Asset(symbol="SAP", asset_class=AssetClass.EQUITY, currency="EUR")
 AAPL = Asset(symbol="AAPL", asset_class=AssetClass.EQUITY)
 
 
-def test_synthetic_rates_are_reproducible_and_start_at_the_anchor() -> None:
+def test_synthetic_rates_are_reproducible_and_end_at_the_anchor() -> None:
     a = SyntheticFx(seed=1).get_rates(["EUR", "GBP"], "USD", START, END)
     b = SyntheticFx(seed=1).get_rates(["EUR", "GBP"], "USD", START, END)
     pd.testing.assert_frame_equal(a, b)
-    assert a["EUR"].iloc[0] == pytest.approx(1.08)
+    assert a["EUR"].iloc[-1] == pytest.approx(1.08)  # anchored at the end date
     assert not a.equals(SyntheticFx(seed=2).get_rates(["EUR", "GBP"], "USD", START, END))
 
 

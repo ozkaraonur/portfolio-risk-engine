@@ -30,7 +30,7 @@ and cash across brokers and answers the questions a risk committee asks:
 | Stress testing | Built-in historical shocks, custom class / tag / symbol shocks, beta-driven market shocks |
 | Web panel | Streamlit UI: portfolio builder, one-click analysis, HTML report download |
 | Reporting | Rich terminal dashboard, zero-dependency HTML report (inline CSS/SVG), Markdown summary |
-| Data | Offline seeded GBM provider (tests, demos), Stooq public-data provider (no API key) with an on-disk cache, FX conversion, broker CSV import |
+| Data | Offline seeded GBM provider (tests, demos), Yahoo Finance public-data provider (no API key, incl. BIST) with an on-disk cache, FX conversion, broker CSV import |
 | Engineering | Pydantic v2 models, `mypy --strict`, ruff, 230+ deterministic tests, Docker, CI on 3.11 / 3.12 |
 
 ## Architecture
@@ -40,7 +40,7 @@ flowchart LR
     P[portfolio.json<br/>positions, brokers, cash] --> M[models<br/>Asset / Position / Portfolio]
     subgraph Data
       S[SyntheticProvider<br/>seeded GBM] --> PP((PriceProvider))
-      Q[StooqProvider<br/>public CSV] --> PP
+      Q[YahooProvider<br/>public JSON] --> PP
     end
     M --> A[reporting.build_analysis]
     PP -->|prices| A
@@ -62,7 +62,7 @@ flowchart LR
 ```
 src/portfolio_risk/
   models/      Asset, Position, CashBalance, Portfolio (immutable pydantic v2 models)
-  data/        PriceProvider ABC, SyntheticProvider (GBM), StooqProvider, CachedProvider, FX (fx.py)
+  data/        PriceProvider ABC, SyntheticProvider (GBM), YahooProvider, CachedProvider, FX (fx.py)
   importers.py broker CSV -> Portfolio
   risk/        covariance, var, tail_models, estimators, attribution, optimize, backtest,
                coverage, linalg,
@@ -84,15 +84,15 @@ pre report examples/portfolio.json --html output/risk-report.html --markdown out
 ```
 
 No internet is needed: the default provider generates reproducible synthetic prices. Use
-`--provider stooq` for public market data.
+`--provider yahoo` for real market data (BIST, US equities, crypto, futures, FX).
 
 ### Real data, cache and currencies
 
-- **Cache.** Stooq downloads are cached per symbol under `~/.cache/portfolio-risk-engine` and reused
+- **Cache.** Yahoo downloads are cached per symbol under `~/.cache/portfolio-risk-engine` and reused
   while they cover the requested range and are younger than 12 hours. Global options go before the
   command: `pre --no-cache ...`, `pre --cache-dir DIR ...`, `pre --cache-ttl-hours 1 ...`.
 - **Currencies.** `Asset.currency` and `CashBalance.currency` may differ from `base_currency`
-  (`--provider stooq` reads pairs such as `eurusd`, inverting `usdeur` when needed; the synthetic
+  (`--provider yahoo` reads pairs such as `EURUSD=X`, inverting when needed; the synthetic
   provider has an offline rate table). A foreign-currency asset's price series is multiplied by the
   daily rate, so its returns, VaR and stress results include the FX move. Foreign cash is converted
   at the latest rate and treated as fixed base-currency cash (no FX risk of its own).
@@ -137,7 +137,7 @@ No internet is needed: the default provider generates reproducible synthetic pri
 
 ```bash
 pre stress examples/portfolio.json --custom "equity=-0.15,tag:tech=-0.30,BTC=-0.5"
-pre stress examples/portfolio.json --market-shock -0.10 --benchmark SPY --provider stooq
+pre stress examples/portfolio.json --market-shock -0.10 --benchmark SPY --provider yahoo
 python examples/run_demo.py          # offline end-to-end demo -> ./output
 ```
 
@@ -197,92 +197,92 @@ Terminal dashboard (`python examples/run_demo.py`: synthetic data, fixed window,
 
 ```text
 +--------------------------- Risk Dashboard: demo ----------------------------+
-| Value  31,402.92 USD   Cash  19.1%   Top risk  AAPL   10d 99% VaR  1,900.79 |
+| Value  39,500.00 USD   Cash  15.2%   Top risk  BTC   10d 99% VaR  4,422.31  |
 +------------------- as of 2025-12-31 | 782 obs | seed 42 --------------------+
 Allocation
 +----------------------------------------------------------+
 | Symbol |     Class |     Value | Weight | Standalone VaR |
 |--------+-----------+-----------+--------+----------------|
-| AAPL   |    equity | 12,051.17 |  38.4% |       1,545.20 |
-| BTC    |    crypto |  1,707.13 |   5.4% |         467.72 |
-| GOLD   | commodity | 11,644.62 |  37.1% |         789.71 |
-| CASH   |      cash |  6,000.00 |  19.1% |              - |
+| AAPL   |    equity | 13,300.00 |  33.7% |       1,832.70 |
+| BTC    |    crypto | 13,000.00 |  32.9% |       3,605.48 |
+| GOLD   | commodity |  7,200.00 |  18.2% |         509.86 |
+| CASH   |      cash |  6,000.00 |  15.2% |              - |
 +----------------------------------------------------------+
 Correlation
 +---------------------------+
 |      | AAPL |  BTC | GOLD |
 |------+------+------+------|
-| AAPL | 1.00 | 0.16 | 0.05 |
-| BTC  | 0.16 | 1.00 | 0.04 |
-| GOLD | 0.05 | 0.04 | 1.00 |
+| AAPL | 1.00 | 0.22 | 0.03 |
+| BTC  | 0.22 | 1.00 | 0.01 |
+| GOLD | 0.03 | 0.01 | 1.00 |
 +---------------------------+
 VaR / CVaR
 +-------------------------------------------------------------------+
 | Method     | Horizon | Conf. |      VaR |     CVaR | Div. benefit |
 |------------+---------+-------+----------+----------+--------------|
-| parametric |      1d |   95% |   425.00 |   532.97 |        32.2% |
-| parametric |      1d |   99% |   601.08 |   688.64 |        32.2% |
-| parametric |     10d |   95% | 1,343.96 | 1,685.38 |        32.2% |
-| parametric |     10d |   99% | 1,900.79 | 2,177.67 |        32.2% |
-| historical |      1d |   95% |   412.18 |   509.23 |        34.1% |
-| historical |      1d |   99% |   565.72 |   654.41 |        32.3% |
-| historical |     10d |   95% | 1,215.23 | 1,438.04 |        37.4% |
-| historical |     10d |   99% | 1,567.66 | 1,750.89 |        39.5% |
+| parametric |      1d |   95% |   988.78 | 1,239.97 |        25.7% |
+| parametric |      1d |   99% | 1,398.46 | 1,602.16 |        25.7% |
+| parametric |     10d |   95% | 3,126.81 | 3,921.14 |        25.7% |
+| parametric |     10d |   99% | 4,422.31 | 5,066.48 |        25.7% |
+| historical |      1d |   95% |   906.02 | 1,104.93 |        27.9% |
+| historical |      1d |   99% | 1,234.25 | 1,428.58 |        26.2% |
+| historical |     10d |   95% | 3,078.00 | 3,735.41 |        18.8% |
+| historical |     10d |   99% | 4,140.39 | 4,383.86 |        23.7% |
 +-------------------------------------------------------------------+
 Risk attribution
 +-----------------------------------------------------------+
 | Symbol |  Exposure | VaR contrib. | Share | CVaR contrib. |
 |--------+-----------+--------------+-------+---------------|
-| AAPL   | 12,051.17 |     1,349.73 | 71.0% |      1,546.34 |
-| BTC    |  1,707.13 |       184.43 |  9.7% |        211.29 |
-| GOLD   | 11,644.62 |       366.63 | 19.3% |        420.04 |
+| AAPL   | 13,300.00 |     1,088.35 | 24.6% |      1,246.89 |
+| BTC    | 13,000.00 |     3,266.29 | 73.9% |      3,742.07 |
+| GOLD   |  7,200.00 |        67.66 |  1.5% |         77.52 |
 +-----------------------------------------------------------+
 Optimisation
 +-----------------------------------------------------------------------------+
-| Allocation  |  AAPL |   BTC |   GOLD | Return |  Vol. |      VaR | VaR chg. |
-|-------------+-------+-------+--------+--------+-------+----------+----------|
-| current     | 47.4% |  6.7% |  45.8% |   4.7% | 16.1% | 1,900.79 |          |
-| min-varian� | 19.4% |  2.7% |  77.9% |  11.7% | 13.1% | 1,541.42 |   -18.9% |
-| risk-parity | 28.8% | 13.5% |  57.7% |   3.3% | 15.2% | 1,789.76 |    -5.8% |
-| max-sharpe  |  0.0% |  0.0% | 100.0% |  16.6% | 14.6% | 1,722.76 |    -9.4% |
+| Allocation   |  AAPL |   BTC |  GOLD | Return |  Vol. |      VaR | VaR chg. |
+|--------------+-------+-------+-------+--------+-------+----------+----------|
+| current      | 39.7% | 38.8% | 21.5% |  17.6% | 28.5% | 4,422.31 |          |
+| min-variance | 18.6% |  3.0% | 78.4% |   7.3% | 13.6% | 2,113.98 |   -52.2% |
+| risk-parity  | 27.5% | 13.8% | 58.8% |  10.8% | 15.8% | 2,451.82 |   -44.6% |
+| max-sharpe   | 45.5% | 12.5% | 42.0% |  13.0% | 18.1% | 2,816.84 |   -36.3% |
 +-----------------------------------------------------------------------------+
 VaR backtest (99% one-day, 532 days)
-+-----------------------------------------------------------------------+
-| Method         | Violations | Expected | Kupiec p | Indep. p |   Zone |
-|----------------+------------+----------+----------+----------+--------|
-| parametric     |          4 |      5.3 |    0.547 |    0.805 |  green |
-| historical     |         10 |      5.3 |    0.069 |    0.536 | yellow |
-| ewma           |          4 |      5.3 |    0.547 |    0.805 |  green |
-| student-t      |          4 |      5.3 |    0.547 |    0.805 |  green |
-| cornish-fisher |          4 |      5.3 |    0.547 |    0.805 |  green |
-| fhs            |          9 |      5.3 |    0.145 |    0.577 | yellow |
-+-----------------------------------------------------------------------+
++----------------------------------------------------------------------+
+| Method         | Violations | Expected | Kupiec p | Indep. p |  Zone |
+|----------------+------------+----------+----------+----------+-------|
+| parametric     |          3 |      5.3 |    0.271 |    0.854 | green |
+| historical     |          6 |      5.3 |    0.772 |    0.711 | green |
+| ewma           |          3 |      5.3 |    0.271 |    0.854 | green |
+| student-t      |          3 |      5.3 |    0.271 |    0.854 | green |
+| cornish-fisher |          3 |      5.3 |    0.271 |    0.854 | green |
+| fhs            |          5 |      5.3 |    0.888 |    0.758 | green |
++----------------------------------------------------------------------+
 Monte Carlo (10,000 x 252d)
 +------------------------------------+
 | Metric        |     Value | Change |
 |---------------+-----------+--------|
-| 5th pct       | 25,411.20 | -19.1% |
-| Median        | 31,036.87 |  -1.2% |
-| 95th pct      | 38,931.85 | +24.0% |
-| VaR 95%       |  5,991.72 | -19.1% |
-| CVaR 95%      |  7,185.71 | -22.9% |
-| VaR 99%       |  7,928.62 | -25.2% |
-| CVaR 99%      |  8,768.12 | -27.9% |
-| P(MDD >= 10%) |     78.7% |        |
-| P(MDD >= 20%) |     15.3% |        |
-| P(MDD >= 30%) |      0.6% |        |
-| P(ruin, -30%) |     0.31% |        |
+| 5th pct       | 27,266.99 | -31.0% |
+| Median        | 37,660.70 |  -4.7% |
+| 95th pct      | 58,543.22 | +48.2% |
+| VaR 95%       | 12,233.01 | -31.0% |
+| CVaR 95%      | 14,052.29 | -35.6% |
+| VaR 99%       | 15,260.79 | -38.6% |
+| CVaR 99%      | 16,530.04 | -41.8% |
+| P(MDD >= 10%) |     99.8% |        |
+| P(MDD >= 20%) |     70.8% |        |
+| P(MDD >= 30%) |     25.6% |        |
+| P(ruin, -30%) |    10.55% |        |
 +------------------------------------+
 Stress tests
-+------------------------------------------------------+
-| Scenario       |       P&L | Loss % | Stressed value |
-|----------------+-----------+--------+----------------|
-| gfc-2008       | -4,700.61 | -15.0% |      26,702.31 |
-| covid-2020     | -7,380.07 | -23.5% |      24,022.85 |
-| inflation-2022 | -2,416.39 |  -7.7% |      28,986.53 |
-+------------------------------------------------------+
++-------------------------------------------------------+
+| Scenario       |        P&L | Loss % | Stressed value |
+|----------------+------------+--------+----------------|
+| gfc-2008       | -12,705.00 | -32.2% |      26,795.00 |
+| covid-2020     | -12,290.00 | -31.1% |      27,210.00 |
+| inflation-2022 | -11,305.00 | -28.6% |      28,195.00 |
++-------------------------------------------------------+
 +-------------------------------- Worst case ---------------------------------+
-| covid-2020 loses 7,380.07 USD (23.5%); remaining capital 24,022.85 USD      |
+| gfc-2008 loses 12,705.00 USD (32.2%); remaining capital 26,795.00 USD       |
 +-----------------------------------------------------------------------------+
 ```
 
@@ -451,7 +451,8 @@ with cash at zero.
 - Parametric VaR assumes zero-mean normal returns (no fat tails or skew); the backtest can flag this and the fat-tail models are alternatives, not fixes: Student-t and Cornish-Fisher use moments estimated from one window; historical VaR needs a representative sample.
 - Synthetic data is for testing and demos. Its volatilities and correlations are configurable
   defaults, not market estimates.
-- The Stooq provider and FX pairs rely on a public endpoint and are exercised only with injected fake responses; BIST assets have no Stooq mapping (the web panel refuses them in real-data mode).
+- Yahoo Finance is an unofficial public endpoint: it can change or rate-limit without notice, and the test suite exercises it only with injected fake responses. Prices are dividend-adjusted closes. Stooq now sits behind a JavaScript check and no longer works from scripts (`--provider stooq` explains this).
+- BIST assets are quoted in TRY and converted with Yahoo (or synthetic) FX; the catalog lists their synthetic prices in lira. Other catalog assets are USD.
 
 ## Development
 

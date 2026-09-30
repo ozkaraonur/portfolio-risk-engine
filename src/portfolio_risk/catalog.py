@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from portfolio_risk.data.fx import USD_PER_UNIT
 from portfolio_risk.data.synthetic import AssetProfile
 from portfolio_risk.models import Asset, AssetClass
 
@@ -25,6 +26,7 @@ CATEGORY_BROKER = {
     CRYPTO: "Binance",
     COMMODITY: "InteractiveBrokers",
 }
+CATEGORY_CURRENCY = {BIST: "TRY"}  # every other category is quoted in USD
 CATEGORY_CLASS = {
     US: AssetClass.EQUITY,
     BIST: AssetClass.EQUITY,
@@ -60,6 +62,10 @@ class CatalogEntry:
         return f"{self.symbol} - {self.name}"
 
     @property
+    def currency(self) -> str:
+        return CATEGORY_CURRENCY.get(self.category, "USD")
+
+    @property
     def broker(self) -> str:
         return CATEGORY_BROKER[self.category]
 
@@ -68,6 +74,7 @@ class CatalogEntry:
             symbol=self.symbol,
             asset_class=self.asset_class,
             name=self.name,
+            currency=self.currency,
             tags=self.tags,
             data_symbol=self.data_symbol,
         )
@@ -223,6 +230,8 @@ def _build(
     ml, gl, group = CATEGORY_FACTORS[category]
     entries = []
     for symbol, name, tags, sigma, mu, price in rows:
+        if category == BIST:  # the table lists USD-equivalent prices; BIST quotes are in lira
+            price = round(price / USD_PER_UNIT["TRY"], 2)
         m, g, grp = (overrides or {}).get(symbol, (ml, gl, group))
         entries.append(
             CatalogEntry(

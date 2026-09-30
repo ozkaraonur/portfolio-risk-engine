@@ -14,6 +14,7 @@ from portfolio_risk.data.base import PriceProvider, validate_range
 from portfolio_risk.models import Asset, AssetClass
 
 TRADING_DAYS = 252
+EPOCH = pd.Timestamp("2000-01-03")  # shocks are indexed by business day counted from here
 
 
 @dataclass(frozen=True)
@@ -73,13 +74,23 @@ def simulate_gbm(
     return np.asarray(params.start_price * np.exp(np.concatenate([[0.0], np.cumsum(log_returns)])))
 
 
+def _anchored(path: np.ndarray, params: GBMParams, rows: np.ndarray) -> np.ndarray:
+    """Rescale so the last point equals ``start_price``, then keep only the requested rows."""
+    scaled = np.asarray(path * (params.start_price / path[-1]), dtype=np.float64)
+    return np.asarray(scaled[rows], dtype=np.float64)
+
+
 class SyntheticProvider(PriceProvider):
     """Generates reproducible GBM price histories on a business-day calendar.
 
     Assets share a common market factor so that returns are positively correlated
     (pairwise correlation ``correlation``). Each asset's idiosyncratic stream depends only
-    on ``(seed, symbol)``, so an asset's path does not change when other assets are added
-    (given the same date range).
+    on ``(seed, symbol)``, so an asset's path does not change when other assets are added.
+
+    Shocks are tied to calendar dates (counted from 2000-01-03) and the path is anchored so the
+    price on ``end`` equals the profile's ``start_price``. The same date therefore always has the
+    same return, and a longer or shorter history never changes the latest price or the returns
+    of the days they share.
     """
 
     def __init__(
@@ -99,9 +110,13 @@ class SyntheticProvider(PriceProvider):
     def get_prices(self, assets: Sequence[Asset], start: date, end: date) -> pd.DataFrame:
         validate_range(start, end)
         index = pd.bdate_range(start, end)
-        n_steps = len(index) - 1
-        if n_steps < 1:
+        if len(index) < 2:
             raise ValueError("Date range must span at least two business days.")
+        if index[0] < EPOCH:
+            raise ValueError(f"Synthetic data starts at {EPOCH.date()}; got start {start}.")
+        full = pd.bdate_range(EPOCH, index[-1])
+        n_steps = len(full) - 1
+        rows = full.get_indexer(index)
 
         market = np.random.default_rng([self._seed, 0]).standard_normal(n_steps)
         columns: dict[str, np.ndarray] = {}
@@ -112,7 +127,8 @@ class SyntheticProvider(PriceProvider):
             profile = self._profiles.get(asset.symbol)
             if profile is None:
                 shocks = np.sqrt(self._rho) * market + np.sqrt(1.0 - self._rho) * idio
-                columns[asset.symbol] = simulate_gbm(self._params[asset.asset_class], shocks)
+                params = self._params[asset.asset_class]
+                columns[asset.symbol] = _anchored(simulate_gbm(params, shocks), params, rows)
                 continue
             if profile.group not in group_shocks:
                 group_key = zlib.crc32(profile.group.encode())
@@ -127,5 +143,7 @@ class SyntheticProvider(PriceProvider):
                 + profile.group_loading * group_shocks[profile.group]
                 + idio_weight * idio
             )
-            columns[asset.symbol] = simulate_gbm(profile.params, shocks)
+            columns[asset.symbol] = _anchored(
+                simulate_gbm(profile.params, shocks), profile.params, rows
+            )
         return pd.DataFrame(columns, index=index)

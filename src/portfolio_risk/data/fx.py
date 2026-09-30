@@ -12,7 +12,7 @@ import pandas as pd
 
 from portfolio_risk.data.base import DataUnavailableError, validate_range
 from portfolio_risk.data.public import StooqProvider
-from portfolio_risk.data.synthetic import GBMParams, simulate_gbm
+from portfolio_risk.data.synthetic import EPOCH, GBMParams, simulate_gbm
 from portfolio_risk.models import CashBalance, Portfolio
 
 # Indicative USD value of one unit of each currency, used to anchor the synthetic rates.
@@ -50,15 +50,19 @@ class SyntheticFx(FxProvider):
     def __init__(self, seed: int = 42) -> None:
         self._seed = seed
 
-    def _usd_path(self, currency: str, n: int) -> np.ndarray:
+    def _usd_path(self, currency: str, index: pd.DatetimeIndex) -> np.ndarray:
+        """USD value of one unit on each date of ``index``; the last date is the anchor rate."""
         if currency == "USD":
-            return np.ones(n)
+            return np.ones(len(index))
         if currency not in USD_PER_UNIT:
             raise DataUnavailableError(f"No synthetic FX profile for {currency}.")
         vol = SYNTHETIC_TRY_VOL if currency == "TRY" else SYNTHETIC_FX_VOL
+        full = pd.bdate_range(EPOCH, index[-1])  # same date -> same shock, whatever the window
         rng = np.random.default_rng([self._seed, 3, zlib.crc32(currency.encode())])
         params = GBMParams(mu=0.0, sigma=vol, start_price=USD_PER_UNIT[currency])
-        return simulate_gbm(params, rng.standard_normal(n - 1))
+        path = simulate_gbm(params, rng.standard_normal(len(full) - 1))
+        anchored = np.asarray(path * (params.start_price / path[-1]), dtype=np.float64)
+        return np.asarray(anchored[full.get_indexer(index)], dtype=np.float64)
 
     def get_rates(
         self, currencies: Sequence[str], base: str, start: date, end: date
@@ -67,9 +71,11 @@ class SyntheticFx(FxProvider):
         index = pd.bdate_range(start, end)
         if len(index) < 2:
             raise ValueError("Date range must span at least two business days.")
-        base_path = self._usd_path(base.upper(), len(index))
+        if index[0] < EPOCH:
+            raise ValueError(f"Synthetic data starts at {EPOCH.date()}; got start {start}.")
+        base_path = self._usd_path(base.upper(), index)
         return pd.DataFrame(
-            {c.upper(): self._usd_path(c.upper(), len(index)) / base_path for c in currencies},
+            {c.upper(): self._usd_path(c.upper(), index) / base_path for c in currencies},
             index=index,
         )
 

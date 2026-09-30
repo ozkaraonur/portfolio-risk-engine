@@ -59,6 +59,11 @@ class StooqProvider(PriceProvider):
         """Daily closes for a raw Stooq symbol (equity, commodity, crypto or an FX pair)."""
         logger.debug("Fetching {} from Stooq", stooq_symbol)
         text = self._fetch(self._url(stooq_symbol, start, end))
+        if text.lstrip().lower().startswith(("<!doctype html", "<html")):
+            raise DataUnavailableError(
+                "Stooq now requires a JavaScript browser check and no longer serves CSV to "
+                "scripts; use --provider yahoo instead."
+            )
         try:
             frame = pd.read_csv(io.StringIO(text), parse_dates=["Date"], index_col="Date")
             close = frame["Close"].astype(float)
@@ -76,4 +81,4 @@ class StooqProvider(PriceProvider):
         validate_range(start, end)
         series = [self._series(a, start, end) for a in assets]
         # Forward-fill so assets with different trading calendars (e.g. crypto) align.
-        return pd.concat(series, axis=1).sort_index().ffill().dropna()
+        return pd.concat(series, axis=1, sort=True).ffill().dropna()

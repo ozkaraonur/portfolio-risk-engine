@@ -12,6 +12,7 @@ from typing import Annotated
 
 import pandas as pd
 import typer
+from loguru import logger
 from pydantic import ValidationError
 from rich.console import Console
 
@@ -26,6 +27,8 @@ from portfolio_risk.data import (
     StooqProvider,
     SyntheticFx,
     SyntheticProvider,
+    YahooFx,
+    YahooProvider,
     convert_to_base,
 )
 from portfolio_risk.data.cache import DEFAULT_TTL_HOURS, default_cache_dir
@@ -71,11 +74,24 @@ app = typer.Typer(
 
 class ProviderName(StrEnum):
     SYNTHETIC = "synthetic"
-    STOOQ = "stooq"
+    STOOQ = "stooq"  # blocked by a JavaScript check; kept for private mirrors / tests
+    YAHOO = "yahoo"
+
+
+def describe_validation_error(path: Path, exc: ValidationError) -> str:
+    """One readable line per problem instead of pydantic's multi-line dump."""
+    problems = "; ".join(
+        f"{'.'.join(str(part) for part in err['loc']) or 'file'}: {err['msg']}"
+        for err in exc.errors()
+    )
+    return f"{path}: {problems}"
 
 
 def load_portfolio(path: Path) -> Portfolio:
-    return Portfolio.model_validate_json(path.read_text(encoding="utf-8"))
+    try:
+        return Portfolio.model_validate_json(path.read_text(encoding="utf-8"))
+    except ValidationError as exc:
+        raise ValueError(describe_validation_error(path, exc)) from exc
 
 
 class _Settings:
@@ -88,17 +104,19 @@ SETTINGS = _Settings()
 
 
 def make_provider(name: ProviderName, seed: int) -> PriceProvider:
-    if name is ProviderName.STOOQ:
-        stooq = StooqProvider()
+    if name is not ProviderName.SYNTHETIC:
+        live: PriceProvider = YahooProvider() if name is ProviderName.YAHOO else StooqProvider()
         if not SETTINGS.use_cache:
-            return stooq
+            return live
         return CachedProvider(
-            stooq, SETTINGS.cache_dir, namespace="stooq", ttl_hours=SETTINGS.cache_ttl_hours
+            live, SETTINGS.cache_dir, namespace=name.value, ttl_hours=SETTINGS.cache_ttl_hours
         )
     return SyntheticProvider(seed=seed, profiles=synthetic_profiles())
 
 
 def make_fx(name: ProviderName, seed: int) -> FxProvider:
+    if name is ProviderName.YAHOO:
+        return YahooFx()
     return StooqFx() if name is ProviderName.STOOQ else SyntheticFx(seed=seed)
 
 
@@ -134,7 +152,10 @@ def main(
     cache_ttl_hours: Annotated[
         float, typer.Option(min=0.0, help="Re-download cached prices older than this.")
     ] = DEFAULT_TTL_HOURS,
+    verbose: Annotated[bool, typer.Option("--verbose", help="Show debug logs.")] = False,
 ) -> None:
+    logger.remove()
+    logger.add(sys.stderr, level="DEBUG" if verbose else "WARNING")
     SETTINGS.use_cache = cache
     SETTINGS.cache_dir = cache_dir
     SETTINGS.cache_ttl_hours = cache_ttl_hours
@@ -451,7 +472,10 @@ def check(
     """Check the portfolio against risk limits; exits with code 2 if any limit is breached."""
     try:
         portfolio = load_portfolio(portfolio_file)
-        limits = load_limits(limits_file)
+        try:
+            limits = load_limits(limits_file)
+        except ValidationError as exc:
+            raise ValueError(describe_validation_error(limits_file, exc)) from exc
         portfolio, prices = fetch_prices(portfolio, provider, seed, history_days)
         analysis = build_analysis(portfolio, prices, simulations=simulations, seed=seed)
     except (ValidationError, DataUnavailableError, ValueError) as exc:

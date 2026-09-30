@@ -248,3 +248,29 @@ def test_stooq_prices_are_cached_between_runs(
     uncached = runner.invoke(app, ["--no-cache", *args[2:]])
     assert uncached.exit_code == 0
     assert len(fetched) == 2 * downloads
+
+
+def test_invalid_files_give_one_readable_line(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.json"
+    bad.write_text("{bad")
+    result = runner.invoke(app, ["summary", str(bad)])
+    assert result.exit_code == 1
+    assert result.output.startswith(f"Error: {bad}: ")
+    assert "errors.pydantic.dev" not in result.output
+    assert len(result.output.strip().splitlines()) == 1
+
+    wrong = tmp_path / "wrong.json"
+    wrong.write_text(
+        '{"positions": [{"asset": {"symbol": "A", "asset_class": "bond"}, "quantity": -1}]}'
+    )
+    result = runner.invoke(app, ["summary", str(wrong)])
+    assert result.exit_code == 1
+    assert "positions.0.asset.asset_class" in result.output
+    assert "positions.0.quantity" in result.output
+
+    limits = tmp_path / "limits.json"
+    limits.write_text('{"max_var_pct": 5}')
+    result = runner.invoke(app, ["check", str(EXAMPLE), str(limits)])
+    assert result.exit_code == 1
+    assert "max_var_pct" in result.output
+    assert "errors.pydantic.dev" not in result.output

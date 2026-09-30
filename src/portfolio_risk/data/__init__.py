@@ -9,6 +9,7 @@ from portfolio_risk.data.fx import (
 )
 from portfolio_risk.data.public import StooqProvider
 from portfolio_risk.data.synthetic import AssetProfile, GBMParams, SyntheticProvider, simulate_gbm
+from portfolio_risk.data.yahoo import YahooFx, YahooProvider
 
 __all__ = [
     "AssetProfile",
@@ -21,6 +22,8 @@ __all__ = [
     "StooqProvider",
     "SyntheticFx",
     "SyntheticProvider",
+    "YahooFx",
+    "YahooProvider",
     "convert_to_base",
     "default_cache_dir",
     "foreign_currencies",

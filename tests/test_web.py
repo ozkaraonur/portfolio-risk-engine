@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import zlib
 from datetime import date, timedelta
 from pathlib import Path
+from urllib.parse import unquote
 
 import numpy as np
 import pandas as pd
@@ -13,6 +15,7 @@ from typer.testing import CliRunner
 from portfolio_risk import cli
 from portfolio_risk.catalog import get_entry
 from portfolio_risk.cli import app
+from portfolio_risk.data import DataUnavailableError
 from portfolio_risk.models import AssetClass
 from portfolio_risk.web.builder import (
     COL_AMOUNT,
@@ -202,31 +205,50 @@ def test_app_sample_to_report_flow() -> None:
     assert all("Fiyat Verisi" not in s.label for s in at.sidebar.selectbox)
 
 
-def _fake_stooq(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
-    """Route Stooq downloads to random-walk CSVs and the cache to ``tmp_path`` (no network)."""
+def _fake_yahoo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[list[str], dict[str, float]]:
+    """Route Yahoo downloads to random-walk JSON and the cache to ``tmp_path`` (no network).
+
+    Returns the requested URLs and the last close served per ticker.
+    """
     requested: list[str] = []
+    last: dict[str, float] = {}
     days = pd.bdate_range(date.today() - timedelta(days=800), date.today())
 
     def fetch(url: str) -> str:
         requested.append(url)
-        rng = np.random.default_rng(zlib.crc32(url.encode()))
-        closes = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, len(days))))
-        rows = ["Date,Open,High,Low,Close,Volume"]
-        rows += [f"{d.date()},1,1,1,{c:.4f},1" for d, c in zip(days, closes, strict=True)]
-        return "\n".join(rows)
+        ticker = unquote(url.split("/chart/")[1].split("?")[0])
+        rng = np.random.default_rng(zlib.crc32(ticker.encode()))
+        start = 0.02 if ticker.endswith("=X") else 100.0
+        closes = start * np.exp(np.cumsum(rng.normal(0, 0.01, len(days))))
+        last[ticker] = float(closes[-1])
+        stamps = [int(pd.Timestamp(d).timestamp()) for d in days]
+        payload = {
+            "chart": {
+                "result": [
+                    {
+                        "timestamp": stamps,
+                        "indicators": {"quote": [{"close": list(closes)}]},
+                    }
+                ],
+                "error": None,
+            }
+        }
+        return json.dumps(payload)
 
-    monkeypatch.setattr("portfolio_risk.data.public._http_fetch", fetch)
+    monkeypatch.setattr("portfolio_risk.data.yahoo._http_fetch", fetch)
     monkeypatch.setattr("portfolio_risk.data.cache.default_cache_dir", lambda: tmp_path)
-    return requested
+    return requested, last
 
 
 def test_app_can_analyse_real_data_and_caches_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    requested = _fake_stooq(monkeypatch, tmp_path)
+    requested, _ = _fake_yahoo(monkeypatch, tmp_path)
     at = new_app()
     at.sidebar.button(key="load_sample").click().run()
-    at.sidebar.radio(key="data_source").set_value("stooq").run()
+    at.sidebar.radio(key="data_source").set_value("yahoo").run()
     at.sidebar.button(key="run_analysis").click().run()
     assert not at.exception
     assert not at.error
@@ -237,19 +259,41 @@ def test_app_can_analyse_real_data_and_caches_it(
     assert len(requested) == downloaded  # second run is served from the cache
 
 
-def test_app_refuses_real_data_for_bist_assets(
+def test_app_values_bist_assets_in_lira_and_converts_to_usd(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    requested = _fake_stooq(monkeypatch, tmp_path)
+    requested, last = _fake_yahoo(monkeypatch, tmp_path)
     at = new_app()
     at.selectbox(key="add_category").select("BIST").run()
-    at.selectbox(key="add_asset_BIST").select_index(0).run()
+    at.selectbox(key="add_asset_BIST").select_index(0).run()  # THYAO
+    at.number_input(key="add_qty").set_value(250).run()
     at.button(key="add_position").click().run()
-    at.sidebar.radio(key="data_source").set_value("stooq").run()
+    at.sidebar.radio(key="data_source").set_value("yahoo").run()
     at.sidebar.button(key="run_analysis").click().run()
     assert not at.exception
-    assert any("BIST" in e.value for e in at.error)
-    assert not requested
+    assert not at.error
+    assert any("THYAO.IS" in unquote(u) for u in requested)
+    assert any("TRYUSD=X" in unquote(u) for u in requested)
+    analysis = at.session_state["analysis"]
+    assert analysis.total_value == pytest.approx(250 * last["THYAO.IS"] * last["TRYUSD=X"])
+    assert analysis.portfolio.base_currency == "USD"
+
+
+def test_app_shows_a_clear_error_when_the_data_source_is_down(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def down(url: str) -> str:
+        raise DataUnavailableError("offline")
+
+    monkeypatch.setattr("portfolio_risk.data.yahoo._http_fetch", down)
+    monkeypatch.setattr("portfolio_risk.data.cache.default_cache_dir", lambda: tmp_path)
+    at = new_app()
+    at.sidebar.button(key="load_sample").click().run()
+    at.sidebar.radio(key="data_source").set_value("yahoo").run()
+    at.sidebar.button(key="run_analysis").click().run()
+    assert not at.exception
+    assert any("offline" in e.value for e in at.error)
+    assert "analysis" not in at.session_state
 
 
 def test_app_reports_empty_portfolio_error() -> None:

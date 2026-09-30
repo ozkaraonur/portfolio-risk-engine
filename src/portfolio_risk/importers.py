@@ -143,7 +143,10 @@ def parse_broker_csv(text: str, broker: str, *, base_currency: str = "USD") -> I
             continue
         if quantity < 0:
             raise ImportFormatError(f"line {line} ({symbol}): short positions are not supported.")
-        currency = row.get(cols.get("currency", ""), "").upper() or base
+        entry = CATALOG.get(symbol)
+        currency = row.get(cols.get("currency", ""), "").upper() or (
+            entry.currency if entry else base
+        )
         try:
             kind = _asset_class(row.get(cols.get("asset_class", ""), ""), symbol)
         except ValueError as exc:
@@ -155,7 +158,6 @@ def parse_broker_csv(text: str, broker: str, *, base_currency: str = "USD") -> I
             code = symbol if symbol in FIAT else currency
             cash[code] = cash.get(code, 0.0) + quantity
         else:
-            entry = CATALOG.get(symbol)
             asset = Asset(
                 symbol=symbol,
                 asset_class=AssetClass(kind),
