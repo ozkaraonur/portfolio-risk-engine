@@ -46,7 +46,7 @@ class RiskAnalysis:
     var_reports: tuple[RiskReport, ...]
     monte_carlo: MonteCarloReport
     stress: StressReport
-    seed: int | None
+    seed: int
     observations: int  # daily return observations used for estimation
 
     @property
@@ -75,7 +75,7 @@ def build_analysis(
     *,
     simulations: int = 10_000,
     mc_days: int = 252,
-    seed: int | None = 42,
+    seed: int = 42,
     loss_threshold: float = 0.3,
 ) -> RiskAnalysis:
     """Run VaR/CVaR, Monte Carlo and the built-in stress scenarios on ``prices``."""

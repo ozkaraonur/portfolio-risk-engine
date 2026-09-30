@@ -219,4 +219,4 @@ def test_run_monte_carlo_requires_history() -> None:
     pf = _portfolio()
     prices = SyntheticProvider().get_prices(pf.assets, date(2024, 1, 1), date(2024, 1, 10))
     with pytest.raises(ValueError, match="observations"):
-        run_monte_carlo(pf, prices)
+        run_monte_carlo(pf, prices, seed=0)
