@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import zlib
+from datetime import date, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -195,8 +198,58 @@ def test_app_sample_to_report_flow() -> None:
     assert any("Risk Katkısı" in m.value for m in at.markdown)
     assert any("Önerilen Ağırlıklar" in m.value for m in at.markdown)
     assert "Model Validation (VaR Backtest)" in at.session_state["report_html"]
-    # No provider choice is exposed any more.
+    # The data source is a radio, not a per-asset dropdown.
     assert all("Fiyat Verisi" not in s.label for s in at.sidebar.selectbox)
+
+
+def _fake_stooq(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
+    """Route Stooq downloads to random-walk CSVs and the cache to ``tmp_path`` (no network)."""
+    requested: list[str] = []
+    days = pd.bdate_range(date.today() - timedelta(days=800), date.today())
+
+    def fetch(url: str) -> str:
+        requested.append(url)
+        rng = np.random.default_rng(zlib.crc32(url.encode()))
+        closes = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, len(days))))
+        rows = ["Date,Open,High,Low,Close,Volume"]
+        rows += [f"{d.date()},1,1,1,{c:.4f},1" for d, c in zip(days, closes, strict=True)]
+        return "\n".join(rows)
+
+    monkeypatch.setattr("portfolio_risk.data.public._http_fetch", fetch)
+    monkeypatch.setattr("portfolio_risk.data.cache.default_cache_dir", lambda: tmp_path)
+    return requested
+
+
+def test_app_can_analyse_real_data_and_caches_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    requested = _fake_stooq(monkeypatch, tmp_path)
+    at = new_app()
+    at.sidebar.button(key="load_sample").click().run()
+    at.sidebar.radio(key="data_source").set_value("stooq").run()
+    at.sidebar.button(key="run_analysis").click().run()
+    assert not at.exception
+    assert not at.error
+    assert "Executive Risk Summary" in at.session_state["report_html"]
+    downloaded = len(requested)
+    assert downloaded == 3
+    at.sidebar.button(key="run_analysis").click().run()
+    assert len(requested) == downloaded  # second run is served from the cache
+
+
+def test_app_refuses_real_data_for_bist_assets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    requested = _fake_stooq(monkeypatch, tmp_path)
+    at = new_app()
+    at.selectbox(key="add_category").select("BIST").run()
+    at.selectbox(key="add_asset_BIST").select_index(0).run()
+    at.button(key="add_position").click().run()
+    at.sidebar.radio(key="data_source").set_value("stooq").run()
+    at.sidebar.button(key="run_analysis").click().run()
+    assert not at.exception
+    assert any("BIST" in e.value for e in at.error)
+    assert not requested
 
 
 def test_app_reports_empty_portfolio_error() -> None:

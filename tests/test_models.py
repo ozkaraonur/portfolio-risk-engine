@@ -46,9 +46,10 @@ def test_missing_price_raises() -> None:
         pf.total_value({"AAPL": 1.0})
 
 
-def test_non_base_currency_rejected() -> None:
-    with pytest.raises(ValidationError):
-        Portfolio(cash=(CashBalance(amount=1, currency="EUR"),))
+def test_foreign_cash_must_be_converted_before_valuation() -> None:
+    pf = Portfolio(cash=(CashBalance(amount=1, currency="EUR"),))
+    with pytest.raises(ValueError, match="convert"):
+        _ = pf.total_cash
 
 
 def test_from_weights_roundtrip() -> None:

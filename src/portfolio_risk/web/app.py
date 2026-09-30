@@ -8,8 +8,14 @@ import pandas as pd
 import streamlit as st
 from pydantic import ValidationError
 
-from portfolio_risk.catalog import CATEGORIES, entries_for, synthetic_profiles
-from portfolio_risk.data import SyntheticProvider
+from portfolio_risk.catalog import BIST, CATALOG, CATEGORIES, entries_for, synthetic_profiles
+from portfolio_risk.data import (
+    CachedProvider,
+    DataUnavailableError,
+    PriceProvider,
+    StooqProvider,
+    SyntheticProvider,
+)
 from portfolio_risk.reporting import RiskAnalysis, build_analysis, render_html, render_markdown
 from portfolio_risk.risk import CORE_METHODS, Method
 from portfolio_risk.web.builder import (
@@ -35,6 +41,23 @@ from portfolio_risk.web.builder import (
 
 SEED = 42
 HISTORY_DAYS = 730
+SOURCE_SYNTHETIC = "synthetic"
+SOURCE_STOOQ = "stooq"
+SOURCE_LABELS = {
+    SOURCE_SYNTHETIC: "Sentetik (çevrimdışı)",
+    SOURCE_STOOQ: "Gerçek piyasa verisi (Stooq)",
+}
+
+
+def _provider(source: str, symbols: list[str]) -> PriceProvider:
+    if source == SOURCE_STOOQ:
+        unsupported = [s for s in symbols if s in CATALOG and CATALOG[s].category == BIST]
+        if unsupported:
+            raise ValueError(
+                f"BIST varlıkları için gerçek veri desteklenmiyor: {', '.join(unsupported)}."
+            )
+        return CachedProvider(StooqProvider(), namespace="stooq")
+    return SyntheticProvider(seed=SEED, profiles=synthetic_profiles())
 
 
 def _init_state() -> None:
@@ -64,16 +87,18 @@ def _heat(value: object) -> str:
     return f"background-color: rgba({rgb},{min(abs(number), 1.0) * 0.5:.2f})"
 
 
-def _run_analysis(positions: pd.DataFrame, cash: pd.DataFrame, simulations: int) -> None:
-    """Prices always come from the synthetic engine (catalog-calibrated, offline)."""
+def _run_analysis(
+    positions: pd.DataFrame, cash: pd.DataFrame, simulations: int, source: str
+) -> None:
+    """Prices come from the offline synthetic engine or, on request, from cached Stooq data."""
     try:
         portfolio = frames_to_portfolio(positions, cash)
         end = date.today()
-        prices = SyntheticProvider(seed=SEED, profiles=synthetic_profiles()).get_prices(
+        prices = _provider(source, portfolio.symbols).get_prices(
             portfolio.assets, end - timedelta(days=HISTORY_DAYS), end
         )
         analysis = build_analysis(portfolio, prices, simulations=simulations, seed=SEED)
-    except (PortfolioInputError, ValidationError, ValueError) as exc:
+    except (PortfolioInputError, ValidationError, ValueError, DataUnavailableError) as exc:
         st.session_state.pop("analysis", None)
         st.error(f"Analiz yapılamadı: {exc}")
         return
@@ -290,6 +315,14 @@ def main() -> None:
             format_func=lambda n: f"{n:,}",
             horizontal=True,
         )
+        source = st.radio(
+            "Veri Kaynağı",
+            list(SOURCE_LABELS),
+            format_func=SOURCE_LABELS.__getitem__,
+            key="data_source",
+        )
+        if source == SOURCE_STOOQ:
+            st.caption("Fiyatlar internetten indirilir ve 12 saat diskte önbelleğe alınır.")
         st.markdown("**Nakit Bakiyesi**")
         cash = st.data_editor(
             st.session_state["cash"],
@@ -360,7 +393,7 @@ def main() -> None:
         st.rerun()
 
     if run:
-        _run_analysis(positions, cash, simulations)
+        _run_analysis(positions, cash, simulations, source)
 
     analysis = st.session_state.get("analysis")
     if analysis is None:

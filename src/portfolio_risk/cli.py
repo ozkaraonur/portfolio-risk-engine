@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Sequence
 from datetime import date, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -17,11 +18,18 @@ from rich.console import Console
 from portfolio_risk import __version__
 from portfolio_risk.catalog import synthetic_profiles
 from portfolio_risk.data import (
+    CachedProvider,
     DataUnavailableError,
+    FxProvider,
     PriceProvider,
+    StooqFx,
     StooqProvider,
+    SyntheticFx,
     SyntheticProvider,
+    convert_to_base,
 )
+from portfolio_risk.data.cache import DEFAULT_TTL_HOURS, default_cache_dir
+from portfolio_risk.importers import ImportFormatError, build_portfolio
 from portfolio_risk.models import Asset, AssetClass, Portfolio
 from portfolio_risk.reporting import build_analysis, render_dashboard, render_html, render_markdown
 from portfolio_risk.risk import (
@@ -63,16 +71,107 @@ def load_portfolio(path: Path) -> Portfolio:
     return Portfolio.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+class _Settings:
+    use_cache = True
+    cache_dir: Path | None = None
+    cache_ttl_hours = DEFAULT_TTL_HOURS
+
+
+SETTINGS = _Settings()
+
+
 def make_provider(name: ProviderName, seed: int) -> PriceProvider:
     if name is ProviderName.STOOQ:
-        return StooqProvider()
+        stooq = StooqProvider()
+        if not SETTINGS.use_cache:
+            return stooq
+        return CachedProvider(
+            stooq, SETTINGS.cache_dir, namespace="stooq", ttl_hours=SETTINGS.cache_ttl_hours
+        )
     return SyntheticProvider(seed=seed, profiles=synthetic_profiles())
+
+
+def make_fx(name: ProviderName, seed: int) -> FxProvider:
+    return StooqFx() if name is ProviderName.STOOQ else SyntheticFx(seed=seed)
+
+
+def fetch_prices(
+    portfolio: Portfolio,
+    name: ProviderName,
+    seed: int,
+    days: int,
+    *,
+    assets: Sequence[Asset] | None = None,
+) -> tuple[Portfolio, pd.DataFrame]:
+    """Prices for the last ``days`` calendar days, plus the portfolio expressed in base currency.
+
+    Positions in foreign currencies are converted with the provider's FX rates, so returns
+    include currency moves; the returned portfolio holds all cash in the base currency.
+    """
+    end = date.today()
+    start = end - timedelta(days=days)
+    prices = make_provider(name, seed).get_prices(assets or portfolio.assets, start, end)
+    converted, in_base = convert_to_base(portfolio, prices, make_fx(name, seed), start, end)
+    return converted, in_base
+
+
+@app.callback()
+def main(
+    cache: Annotated[
+        bool, typer.Option("--cache/--no-cache", help="Cache downloaded prices on disk.")
+    ] = True,
+    cache_dir: Annotated[
+        Path | None,
+        typer.Option(help=f"Cache directory (default: {default_cache_dir()})."),
+    ] = None,
+    cache_ttl_hours: Annotated[
+        float, typer.Option(min=0.0, help="Re-download cached prices older than this.")
+    ] = DEFAULT_TTL_HOURS,
+) -> None:
+    SETTINGS.use_cache = cache
+    SETTINGS.cache_dir = cache_dir
+    SETTINGS.cache_ttl_hours = cache_ttl_hours
 
 
 @app.command()
 def version() -> None:
     """Print the package version."""
     typer.echo(__version__)
+
+
+@app.command(name="import")
+def import_positions(
+    sources: Annotated[
+        list[str],
+        typer.Argument(help="Broker exports as BROKER=FILE.csv (or just FILE.csv)."),
+    ],
+    output: Annotated[Path, typer.Option("--output", "-o", help="Portfolio JSON to write.")],
+    name: Annotated[str, typer.Option(help="Portfolio name.")] = "imported",
+    base_currency: Annotated[str, typer.Option(help="Reporting currency.")] = "USD",
+) -> None:
+    """Merge broker position exports (CSV) into one portfolio file."""
+    texts: dict[str, str] = {}
+    try:
+        for source in sources:
+            broker, sep, raw_path = source.partition("=")
+            path = Path(raw_path if sep else broker)
+            broker = broker if sep else path.stem
+            if broker in texts:
+                raise ValueError(f"Broker '{broker}' given twice.")
+            texts[broker] = path.read_text(encoding="utf-8-sig")
+        portfolio, notes = build_portfolio(texts, name=name, base_currency=base_currency)
+    except (OSError, ImportFormatError, ValidationError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(portfolio.model_dump_json(indent=2) + "\n", encoding="utf-8", newline="\n")
+    for note in notes:
+        typer.echo(f"Skipped {note}", err=True)
+    typer.echo(
+        f"Wrote {output}: {len(portfolio.positions)} positions, {len(portfolio.cash)} cash "
+        f"balances across {', '.join(portfolio.brokers)}."
+    )
 
 
 @app.command()
@@ -85,10 +184,7 @@ def summary(
     """Value a portfolio at the latest price and show weights."""
     try:
         portfolio = load_portfolio(portfolio_file)
-        end = date.today()
-        prices = make_provider(provider, seed).get_prices(
-            portfolio.assets, end - timedelta(days=days), end
-        )
+        portfolio, prices = fetch_prices(portfolio, provider, seed, days)
     except (ValidationError, DataUnavailableError, ValueError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -122,10 +218,7 @@ def risk(
     """VaR, CVaR (parametric and historical), diversification and correlations."""
     try:
         portfolio = load_portfolio(portfolio_file)
-        end = date.today()
-        prices = make_provider(provider, seed).get_prices(
-            portfolio.assets, end - timedelta(days=days), end
-        )
+        portfolio, prices = fetch_prices(portfolio, provider, seed, days)
         reports = [
             analyze_risk(portfolio, prices, method=m, confidence=confidence, horizon=horizon)
             for m in (Method if all_methods else CORE_METHODS)
@@ -171,10 +264,7 @@ def backtest(
     """Backtest one-day VaR: violations, Kupiec / Christoffersen tests, Basel traffic light."""
     try:
         portfolio = load_portfolio(portfolio_file)
-        end = date.today()
-        prices = make_provider(provider, seed).get_prices(
-            portfolio.assets, end - timedelta(days=days), end
-        )
+        portfolio, prices = fetch_prices(portfolio, provider, seed, days)
         results = [
             run_backtest(portfolio, prices, method=m, confidence=confidence, window=window)
             for m in Method
@@ -220,10 +310,7 @@ def attribute(
     """Risk attribution: each position's component VaR / CVaR and marginal VaR."""
     try:
         portfolio = load_portfolio(portfolio_file)
-        end = date.today()
-        prices = make_provider(provider, seed).get_prices(
-            portfolio.assets, end - timedelta(days=days), end
-        )
+        portfolio, prices = fetch_prices(portfolio, provider, seed, days)
         latest = {str(k): float(v) for k, v in prices.iloc[-1].items()}
         exposures = pd.Series(portfolio.market_values(latest), dtype=float)
         result = risk_contributions(
@@ -283,10 +370,7 @@ def optimize(
         raise typer.Exit(code=1) from exc
     try:
         portfolio = load_portfolio(portfolio_file)
-        end = date.today()
-        prices = make_provider(provider, seed).get_prices(
-            portfolio.assets, end - timedelta(days=days), end
-        )
+        portfolio, prices = fetch_prices(portfolio, provider, seed, days)
         returns = prices[portfolio.symbols].pct_change().dropna()
         latest = {str(k): float(v) for k, v in prices.iloc[-1].items()}
         values = pd.Series(portfolio.market_values(latest), dtype=float)
@@ -373,10 +457,7 @@ def simulate(
     """Monte Carlo value paths: VaR/CVaR, terminal percentiles, drawdowns, ruin probability."""
     try:
         portfolio = load_portfolio(portfolio_file)
-        end = date.today()
-        prices = make_provider(provider, seed).get_prices(
-            portfolio.assets, end - timedelta(days=history_days), end
-        )
+        portfolio, prices = fetch_prices(portfolio, provider, seed, history_days)
         result = run_monte_carlo(
             portfolio,
             prices,
@@ -463,10 +544,7 @@ def stress(
         assets = portfolio.assets
         if market_shock is not None and benchmark.upper() not in portfolio.symbols:
             assets = [*assets, Asset(symbol=benchmark, asset_class=AssetClass.EQUITY)]
-        end = date.today()
-        prices = make_provider(provider, seed).get_prices(
-            assets, end - timedelta(days=history_days), end
-        )
+        portfolio, prices = fetch_prices(portfolio, provider, seed, history_days, assets=assets)
         latest = {str(k): float(v) for k, v in prices.iloc[-1].items()}
         beta_line = ""
         if market_shock is not None:
@@ -536,10 +614,7 @@ def report(
     """Run the full analysis: terminal dashboard plus optional HTML / Markdown reports."""
     try:
         portfolio = load_portfolio(portfolio_file)
-        end = date.today()
-        prices = make_provider(provider, seed).get_prices(
-            portfolio.assets, end - timedelta(days=history_days), end
-        )
+        portfolio, prices = fetch_prices(portfolio, provider, seed, history_days)
         analysis = build_analysis(
             portfolio,
             prices,

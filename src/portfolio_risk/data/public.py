@@ -53,19 +53,24 @@ class StooqProvider(PriceProvider):
         )
         return f"{STOOQ_URL}?{query}"
 
-    def _series(self, asset: Asset, start: date, end: date) -> pd.Series[float]:
-        symbol = self.stooq_symbol(asset)
-        logger.debug("Fetching {} from Stooq", symbol)
-        text = self._fetch(self._url(symbol, start, end))
+    def close_series(
+        self, stooq_symbol: str, label: str, start: date, end: date
+    ) -> pd.Series[float]:
+        """Daily closes for a raw Stooq symbol (equity, commodity, crypto or an FX pair)."""
+        logger.debug("Fetching {} from Stooq", stooq_symbol)
+        text = self._fetch(self._url(stooq_symbol, start, end))
         try:
             frame = pd.read_csv(io.StringIO(text), parse_dates=["Date"], index_col="Date")
             close = frame["Close"].astype(float)
         except (ValueError, KeyError, pd.errors.ParserError) as exc:
-            raise DataUnavailableError(f"No usable data for {asset.symbol} ({symbol}).") from exc
+            raise DataUnavailableError(f"No usable data for {label} ({stooq_symbol}).") from exc
         if close.empty:
-            raise DataUnavailableError(f"No data returned for {asset.symbol} ({symbol}).")
-        close.name = asset.symbol
+            raise DataUnavailableError(f"No data returned for {label} ({stooq_symbol}).")
+        close.name = label
         return close.sort_index()
+
+    def _series(self, asset: Asset, start: date, end: date) -> pd.Series[float]:
+        return self.close_series(self.stooq_symbol(asset), asset.symbol, start, end)
 
     def get_prices(self, assets: Sequence[Asset], start: date, end: date) -> pd.DataFrame:
         validate_range(start, end)

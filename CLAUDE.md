@@ -6,6 +6,8 @@ Modular multi-broker portfolio risk and stress-testing engine (Python 3.11+).
 - `src/portfolio_risk/models/` — pydantic v2 domain models (`Asset`, `Position`, `CashBalance`, `Portfolio`).
 - `src/portfolio_risk/data/` — price providers behind the `PriceProvider` ABC:
   `SyntheticProvider` (seeded GBM, offline, used in tests) and `StooqProvider` (public CSV, network).
+  `cache.py` (`CachedProvider`, JSON per symbol, TTL) wraps any provider; `fx.py` (`FxProvider`, `SyntheticFx`, `StooqFx`, `convert_to_base`) expresses foreign-currency prices/cash in the base currency (the CLI does this in `fetch_prices`).
+- `src/portfolio_risk/importers.py` — broker CSV -> `Portfolio` (`pre import`).
 - `src/portfolio_risk/risk/` — covariance/correlation, parametric + historical VaR/CVaR (`var.py`), `analyze_risk` report with diversification benefit (`report.py`). VaR/CVaR are positive loss amounts; cash adds value but no risk.
 - `src/portfolio_risk/risk/estimators.py` — `Method` enum (parametric, historical, ewma, student-t, cornish-fisher, fhs) and the `estimate_var_cvar` dispatcher; `tail_models.py` holds the P&L-based fat-tail models; `CORE_METHODS` (parametric, historical) are the ones in standard reports.
 - `src/portfolio_risk/risk/backtest.py` + `coverage.py` — rolling one-day VaR backtest (hypothetical P&L on today's exposures) for every `Method`, Kupiec/Christoffersen tests, Basel zones; `build_analysis` includes it when history allows and the reports draw the violation charts.

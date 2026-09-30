@@ -1,9 +1,12 @@
+from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
+import pytest
 from typer.testing import CliRunner
 
 from portfolio_risk import __version__
-from portfolio_risk.cli import app
+from portfolio_risk.cli import app, load_portfolio
 
 runner = CliRunner()
 EXAMPLE = Path(__file__).parent.parent / "examples" / "portfolio.json"
@@ -170,3 +173,78 @@ def test_optimize_single_objective_and_errors() -> None:
     infeasible = runner.invoke(app, ["optimize", str(EXAMPLE), "--max-weight", "0.2"])
     assert infeasible.exit_code == 1
     assert "infeasible" in infeasible.output
+
+
+# --- data sources: import, multi-currency, cache -------------------------------------------------
+
+
+def test_import_merges_broker_exports_into_a_portfolio(tmp_path: Path) -> None:
+    ibkr = tmp_path / "ibkr.csv"
+    ibkr.write_text("Symbol,Position,Currency\nAAPL,10,USD\nSAP,5,EUR\nEUR,100,CASH\n")
+    binance = tmp_path / "coins.csv"
+    binance.write_text("Coin,Total\nBTC,0.5\nUSDT,250\n")
+    out = tmp_path / "out" / "portfolio.json"
+    result = runner.invoke(
+        app, ["import", f"ibkr={ibkr}", str(binance), "-o", str(out), "--name", "mine"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "3 positions" in result.output
+    portfolio = load_portfolio(out)
+    assert portfolio.name == "mine"
+    assert portfolio.brokers == ["coins", "ibkr"]  # file stem is the default broker name
+    assert portfolio.quantities()["BTC"] == 0.5
+
+
+def test_import_errors(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.csv"
+    bad.write_text("Name,Value\nx,1\n")
+    out = tmp_path / "p.json"
+    assert runner.invoke(app, ["import", str(bad), "-o", str(out)]).exit_code == 1
+    assert (
+        runner.invoke(app, ["import", str(tmp_path / "missing.csv"), "-o", str(out)]).exit_code == 1
+    )
+    assert not out.exists()
+
+
+def test_multi_currency_portfolio_is_valued_in_the_base_currency(tmp_path: Path) -> None:
+    portfolio = tmp_path / "eur.json"
+    portfolio.write_text(
+        '{"base_currency": "USD", "positions": ['
+        '{"asset": {"symbol": "SAP", "asset_class": "equity", "currency": "EUR"}, "quantity": 10},'
+        '{"asset": {"symbol": "AAPL", "asset_class": "equity"}, "quantity": 5}],'
+        '"cash": [{"amount": 1000, "currency": "EUR"}, {"amount": 500}]}'
+    )
+    for command in ("summary", "risk", "backtest"):
+        result = runner.invoke(app, [command, str(portfolio), "--seed", "3"])
+        assert result.exit_code == 0, (command, result.output)
+    once = runner.invoke(app, ["summary", str(portfolio), "--seed", "3"])
+    again = runner.invoke(app, ["summary", str(portfolio), "--seed", "3"])
+    assert once.output == again.output
+    assert "CASH" in once.output
+
+
+def test_stooq_prices_are_cached_between_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetched: list[str] = []
+    days = pd.bdate_range(date.today() - timedelta(days=800), date.today())
+
+    def fake_fetch(url: str) -> str:
+        fetched.append(url)
+        rows = ["Date,Open,High,Low,Close,Volume"]
+        rows += [f"{d.date()},1,1,1,{100 + i % 7 + 0.1 * i:.2f},1" for i, d in enumerate(days)]
+        return "\n".join(rows)
+
+    monkeypatch.setattr("portfolio_risk.data.public._http_fetch", fake_fetch)
+    args = ["--cache-dir", str(tmp_path / "cache"), "summary", str(EXAMPLE), "--provider", "stooq"]
+    first = runner.invoke(app, args)
+    assert first.exit_code == 0, first.output
+    downloads = len(fetched)
+    assert downloads == 3  # AAPL, BTC, GOLD
+    second = runner.invoke(app, args)
+    assert second.exit_code == 0
+    assert len(fetched) == downloads
+    assert second.output == first.output
+    uncached = runner.invoke(app, ["--no-cache", *args[2:]])
+    assert uncached.exit_code == 0
+    assert len(fetched) == 2 * downloads

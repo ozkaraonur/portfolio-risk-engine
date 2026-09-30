@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from portfolio_risk.models.asset import Asset
 
@@ -20,7 +20,7 @@ class Position(BaseModel):
 
 
 class CashBalance(BaseModel):
-    """Cash held at a broker (assumed to be in the portfolio base currency)."""
+    """Cash held at a broker, in ``currency`` (converted to the base currency before valuation)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -39,15 +39,6 @@ class Portfolio(BaseModel):
     positions: tuple[Position, ...] = ()
     cash: tuple[CashBalance, ...] = ()
 
-    @model_validator(mode="after")
-    def _check_currencies(self) -> Portfolio:
-        # Single-currency valuation for now; FX conversion is out of scope for milestone 1.
-        foreign = {c.currency for c in self.cash} | {p.asset.currency for p in self.positions}
-        foreign.discard(self.base_currency)
-        if foreign:
-            raise ValueError(f"Non-base currencies not supported yet: {sorted(foreign)}")
-        return self
-
     @property
     def symbols(self) -> list[str]:
         """Unique asset symbols, in first-seen order."""
@@ -64,6 +55,13 @@ class Portfolio(BaseModel):
 
     @property
     def total_cash(self) -> float:
+        """Cash in the base currency; foreign balances must be converted first (see ``fx``)."""
+        foreign = sorted({c.currency for c in self.cash if c.currency != self.base_currency})
+        if foreign:
+            raise ValueError(
+                f"Cash in {foreign} must be converted to {self.base_currency} first "
+                "(portfolio_risk.data.fx.convert_to_base)."
+            )
         return sum(c.amount for c in self.cash)
 
     def quantities(self) -> dict[str, float]:

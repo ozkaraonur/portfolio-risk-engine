@@ -30,7 +30,7 @@ and cash across brokers and answers the questions a risk committee asks:
 | Stress testing | Built-in historical shocks, custom class / tag / symbol shocks, beta-driven market shocks |
 | Web panel | Streamlit UI: portfolio builder, one-click analysis, HTML report download |
 | Reporting | Rich terminal dashboard, zero-dependency HTML report (inline CSS/SVG), Markdown summary |
-| Data | Offline seeded GBM provider (tests, demos) and Stooq public-data provider (no API key) |
+| Data | Offline seeded GBM provider (tests, demos), Stooq public-data provider (no API key) with an on-disk cache, FX conversion, broker CSV import |
 | Engineering | Pydantic v2 models, `mypy --strict`, ruff, 230+ deterministic tests, Docker, CI on 3.11 / 3.12 |
 
 ## Architecture
@@ -62,7 +62,8 @@ flowchart LR
 ```
 src/portfolio_risk/
   models/      Asset, Position, CashBalance, Portfolio (immutable pydantic v2 models)
-  data/        PriceProvider ABC, SyntheticProvider (GBM), StooqProvider
+  data/        PriceProvider ABC, SyntheticProvider (GBM), StooqProvider, CachedProvider, FX (fx.py)
+  importers.py broker CSV -> Portfolio
   risk/        covariance, var, tail_models, estimators, attribution, optimize, backtest,
                coverage, linalg,
                monte_carlo, scenarios, stress, report
@@ -85,6 +86,23 @@ pre report examples/portfolio.json --html output/risk-report.html --markdown out
 No internet is needed: the default provider generates reproducible synthetic prices. Use
 `--provider stooq` for public market data.
 
+### Real data, cache and currencies
+
+- **Cache.** Stooq downloads are cached per symbol under `~/.cache/portfolio-risk-engine` and reused
+  while they cover the requested range and are younger than 12 hours. Global options go before the
+  command: `pre --no-cache ...`, `pre --cache-dir DIR ...`, `pre --cache-ttl-hours 1 ...`.
+- **Currencies.** `Asset.currency` and `CashBalance.currency` may differ from `base_currency`
+  (`--provider stooq` reads pairs such as `eurusd`, inverting `usdeur` when needed; the synthetic
+  provider has an offline rate table). A foreign-currency asset's price series is multiplied by the
+  daily rate, so its returns, VaR and stress results include the FX move. Foreign cash is converted
+  at the latest rate and treated as fixed base-currency cash (no FX risk of its own).
+- **Broker exports.** `pre import ibkr=positions.csv binance=coins.csv -o portfolio.json` reads
+  position CSVs, matching columns by name (symbol/ticker/coin, quantity/position/total/shares,
+  currency, asset class), sniffing `,` `;` tab delimiters and accepting `1,234.50` or `1.234,50`.
+  Fiat rows and stablecoins (USDT, USDC, ...) become cash; known symbols are enriched from the
+  catalog (name, tags, data symbol). Multi-section broker statements (e.g. a full IBKR activity
+  report) must be reduced to the positions table first.
+
 ### Portfolio format
 
 ```json
@@ -104,6 +122,7 @@ No internet is needed: the default provider generates reproducible synthetic pri
 
 | Command | Purpose |
 | --- | --- |
+| `pre import BROKER=FILE.csv ... -o portfolio.json` | Merge broker position exports into a portfolio file |
 | `pre summary <file>` | Latest valuation and weights |
 | `pre risk <file> --confidence 0.99 --horizon 10 [--all-methods]` | Parametric and historical VaR / CVaR, diversification, correlations; all six models with `--all-methods` |
 | `pre attribute <file> [--method historical]` | Component VaR / CVaR, share and marginal VaR per position |
@@ -410,11 +429,11 @@ with cash at zero.
 ## Assumptions and limitations
 
 - Reports are model outputs, not forecasts or investment advice; the optimiser ignores costs, taxes and liquidity.
-- Single-currency valuation (no FX); long-only positions.
+- Long-only positions. Foreign-currency cash is converted at the latest rate (no FX risk), and the web panel and catalog are USD-based.
 - Parametric VaR assumes zero-mean normal returns (no fat tails or skew); the backtest can flag this and the fat-tail models are alternatives, not fixes: Student-t and Cornish-Fisher use moments estimated from one window; historical VaR needs a representative sample.
 - Synthetic data is for testing and demos. Its volatilities and correlations are configurable
   defaults, not market estimates.
-- The Stooq provider relies on a public endpoint and is not exercised by the test suite.
+- The Stooq provider and FX pairs rely on a public endpoint and are exercised only with injected fake responses; BIST assets have no Stooq mapping (the web panel refuses them in real-data mode).
 
 ## Development
 
